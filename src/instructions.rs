@@ -1,10 +1,12 @@
 use crate::gb::AccessType::{Direct, Indirect};
 use crate::gb::GameBoy;
 use anyhow::anyhow;
+use anyhow::Result;
 
-pub fn execute_next_instruction(gb: &mut GameBoy) -> anyhow::Result<u8> {
-    let instruction = gb.read_and_increment_pc();
-    let cycles: anyhow::Result<u8> = match instruction {
+pub fn execute_next_instruction(gb: &mut GameBoy) -> Result<u8> {
+    let instruction = gb.read_and_increment_pc()?;
+    // A: 01 F: B0 B: 00 C: 13 D: 00 E: D8 H: 01 L: 4D SP: FFFE PC: 00:0100 (00 C3 13 02)
+    let cycles: Result<u8> = match instruction {
         0o0 => nop(),
         0o01 | 0o21 | 0o41 | 0o61 => ld_r16_n16(gb, instruction),
         0o02 | 0o22 | 0o42 | 0o62 => ld_ind_r16_a(gb, instruction),
@@ -26,17 +28,17 @@ pub fn execute_next_instruction(gb: &mut GameBoy) -> anyhow::Result<u8> {
         0o77 => ccf(gb),
         0o30 => jr_n8(gb),
         0o40 | 0o50 | 0o60 | 0o70 => jr_cond_n8(gb, instruction),
-        0o20 => stop(),
-        0o166 => halt(),
+        0o20 => stop(gb),
+        0o166 => halt(gb),
         (0o100..=0o177) => ld_r8_r8(gb, instruction),
-        0o201..=0o207 => add_a_r8(gb, instruction),
-        0o211..=0o217 => adc_a_r8(gb, instruction),
-        0o221..=0o227 => sub_a_r8(gb, instruction),
-        0o231..=0o237 => sbc_a_r8(gb, instruction),
-        0o241..=0o247 => and_a_r8(gb, instruction),
-        0o251..=0o257 => xor_a_r8(gb, instruction),
-        0o261..=0o267 => or_a_r8(gb, instruction),
-        0o271..=0o277 => cp_a_r8(gb, instruction),
+        0o200..=0o207 => add_a_r8(gb, instruction),
+        0o210..=0o217 => adc_a_r8(gb, instruction),
+        0o220..=0o227 => sub_a_r8(gb, instruction),
+        0o230..=0o237 => sbc_a_r8(gb, instruction),
+        0o240..=0o247 => and_a_r8(gb, instruction),
+        0o250..=0o257 => xor_a_r8(gb, instruction),
+        0o260..=0o267 => or_a_r8(gb, instruction),
+        0o270..=0o277 => cp_a_r8(gb, instruction),
         0o306 => add_a_n8(gb),
         0o316 => adc_a_n8(gb),
         0o326 => sub_a_n8(gb),
@@ -78,77 +80,54 @@ fn get_bits(instruction: u8, high_bit: u8, low_bit: u8) -> u8 {
     return (instruction >> low_bit) & ((1 << (1 + high_bit - low_bit)) - 1);
 }
 
-fn is_signed_add_half_carry_16_8(a: u16, b: i8) -> bool {
-    return if b > 0 {
-        is_add_half_carry_8(a as u8, b.unsigned_abs())
-    } else {
-        is_sub_half_carry_8(a as u8, b.unsigned_abs())
-    };
-}
-
-fn is_signed_add_carry_16_8(a: u16, b: i8) -> bool {
-    return if b > 0 {
-        is_add_carry_16(a, u16::from(b.unsigned_abs()))
-    } else {
-        is_sub_carry_16(a, u16::from(b.unsigned_abs()))
-    };
-}
-
-fn is_add_carry_16(a: u16, b: u16) -> bool {
-    return a > u16::MAX - b;
-}
-
-fn is_sub_carry_16(a: u16, b: u16) -> bool {
-    return b > a;
-}
-
 fn is_add_half_carry_16(a: u16, b: u16) -> bool {
-    return a & 0xFFF + b & 0xFFF > 0xFFF;
+    return ((a & 0xFFF) + (b & 0xFFF)) & 0x1000 == 0x1000;
 }
 
 fn is_add_half_carry_8(a: u8, b: u8) -> bool {
-    return a & 0xF + b & 0xF > 0xF;
+    return ((a & 0xF) + (b & 0xF)) & 0x10 == 0x10;
 }
 
 fn is_sub_half_carry_8(a: u8, b: u8) -> bool {
-    return b & 0xF > a & 0xF;
+    return ((a & 0xF).wrapping_sub(b & 0xF)) & 0x10 == 0x10;
 }
 
 fn rotate_left(value: u8) -> (u8, bool) {
-    let result = value << 1 | value >> 7;
-    let carry = value >> 7 == 1;
+    let result = value.wrapping_shl(1) | value.wrapping_shr(7);
+    let carry = value.wrapping_shr(7) == 1;
     (result, carry)
 }
 
 fn rotate_left_with_carry(value: u8, carry: bool) -> (u8, bool) {
-    let result = value << 1
+    let result = value.wrapping_shl(1)
         | match carry {
             true => 1,
             false => 0,
         };
-    let carry = value >> 7 == 1;
+    let carry = value.wrapping_shr(7) == 1;
     (result, carry)
 }
 
 fn rotate_right(value: u8) -> (u8, bool) {
-    let result = value >> 1 | value << 7;
+    let result = value.wrapping_shr(1) | value.wrapping_shl(7);
     let carry = value & 1 == 1;
     (result, carry)
 }
 
 fn rotate_right_with_carry(value: u8, carry: bool) -> (u8, bool) {
-    let result = value >> 1
+    let result = value.wrapping_shr(1)
         | (match carry {
-            true => 1,
-            false => 0,
-        }) << 7;
+            true => 1u8,
+            false => 0u8,
+        })
+        .wrapping_shl(7);
     let carry = value & 1 == 1;
     (result, carry)
 }
 
 fn shift_left(value: u8) -> (u8, bool) {
-    let result = value << 1;
-    let carry = value >> 7 == 1;
+    let result = value.wrapping_shl(1);
+    let carry = value.wrapping_shr(7) == 1;
     (result, carry)
 }
 
@@ -164,50 +143,50 @@ fn shift_right_logical(value: u8) -> (u8, bool) {
     (result, carry)
 }
 
-fn nop() -> anyhow::Result<u8> {
+fn nop() -> Result<u8> {
     Ok(2)
 }
 
-fn ld_r16_n16(gb: &mut GameBoy, instruction: u8) -> anyhow::Result<u8> {
-    let operand = gb.read_n16();
+fn ld_r16_n16(gb: &mut GameBoy, instruction: u8) -> Result<u8> {
+    let operand = gb.read_n16()?;
     let reg = get_bits(instruction, 5, 4);
     gb.write_r16(reg, operand)?;
     Ok(3)
 }
 
-fn ld_ind_r16_a(gb: &mut GameBoy, instruction: u8) -> anyhow::Result<u8> {
+fn ld_ind_r16_a(gb: &mut GameBoy, instruction: u8) -> Result<u8> {
     let reg = get_bits(instruction, 5, 4);
     let address = gb.r16_mem(reg)?;
-    gb.write_8(address, gb.a);
+    gb.write_8(address, gb.a)?;
     Ok(2)
 }
 
-fn ld_a_ind_r16(gb: &mut GameBoy, instruction: u8) -> anyhow::Result<u8> {
+fn ld_a_ind_r16(gb: &mut GameBoy, instruction: u8) -> Result<u8> {
     let reg = get_bits(instruction, 5, 4);
     let address = gb.r16_mem(reg)?;
-    gb.a = gb.read_8(address);
+    gb.a = gb.read_8(address)?;
     Ok(2)
 }
 
-fn ld_ind_n16_sp(gb: &mut GameBoy) -> anyhow::Result<u8> {
-    let address = gb.read_n16();
-    gb.write_16(address, gb.sp);
+fn ld_ind_n16_sp(gb: &mut GameBoy) -> Result<u8> {
+    let address = gb.read_n16()?;
+    gb.write_16(address, gb.sp)?;
     Ok(5)
 }
 
-fn inc_r16(gb: &mut GameBoy, instruction: u8) -> anyhow::Result<u8> {
+fn inc_r16(gb: &mut GameBoy, instruction: u8) -> Result<u8> {
     let reg = get_bits(instruction, 5, 4);
-    gb.write_r16(reg, gb.read_r16(reg)? + 1)?;
+    gb.write_r16(reg, gb.read_r16(reg)?.wrapping_add(1))?;
     Ok(2)
 }
 
-fn dec_r16(gb: &mut GameBoy, instruction: u8) -> anyhow::Result<u8> {
+fn dec_r16(gb: &mut GameBoy, instruction: u8) -> Result<u8> {
     let reg = get_bits(instruction, 5, 4);
-    gb.write_r16(reg, gb.read_r16(reg)? + 1)?;
+    gb.write_r16(reg, gb.read_r16(reg)?.wrapping_sub(1))?;
     Ok(2)
 }
 
-fn add_hl_r16(gb: &mut GameBoy, instruction: u8) -> anyhow::Result<u8> {
+fn add_hl_r16(gb: &mut GameBoy, instruction: u8) -> Result<u8> {
     let hl = gb.read_hl()?;
     let reg = get_bits(instruction, 5, 4);
     let operand = gb.read_r16(reg)?;
@@ -219,10 +198,10 @@ fn add_hl_r16(gb: &mut GameBoy, instruction: u8) -> anyhow::Result<u8> {
     Ok(2)
 }
 
-fn inc_r8(gb: &mut GameBoy, instruction: u8) -> anyhow::Result<u8> {
+fn inc_r8(gb: &mut GameBoy, instruction: u8) -> Result<u8> {
     let reg = get_bits(instruction, 5, 3);
     let (operand, access_type) = gb.read_r8(reg)?;
-    let result = operand + 1;
+    let result = operand.wrapping_add(1);
     gb.write_r8(reg, result)?;
     gb.set_z(result == 0);
     gb.set_n(false);
@@ -233,10 +212,10 @@ fn inc_r8(gb: &mut GameBoy, instruction: u8) -> anyhow::Result<u8> {
     })
 }
 
-fn dec_r8(gb: &mut GameBoy, instruction: u8) -> anyhow::Result<u8> {
+fn dec_r8(gb: &mut GameBoy, instruction: u8) -> Result<u8> {
     let reg = get_bits(instruction, 5, 3);
     let (operand, access_type) = gb.read_r8(reg)?;
-    let result = operand - 1;
+    let result = operand.wrapping_sub(1);
     gb.write_r8(reg, result)?;
     gb.set_z(result == 0);
     gb.set_n(true);
@@ -247,16 +226,16 @@ fn dec_r8(gb: &mut GameBoy, instruction: u8) -> anyhow::Result<u8> {
     })
 }
 
-fn ld_r8_n8(gb: &mut GameBoy, instruction: u8) -> anyhow::Result<u8> {
+fn ld_r8_n8(gb: &mut GameBoy, instruction: u8) -> Result<u8> {
     let reg = get_bits(instruction, 5, 3);
-    let operand = gb.read_n8();
+    let operand = gb.read_n8()?;
     Ok(match gb.write_r8(reg, operand)? {
         Direct => 2,
         Indirect => 3,
     })
 }
 
-fn rlca(gb: &mut GameBoy) -> anyhow::Result<u8> {
+fn rlca(gb: &mut GameBoy) -> Result<u8> {
     let (result, carry) = rotate_left(gb.a);
     gb.set_z(false);
     gb.set_n(false);
@@ -266,7 +245,7 @@ fn rlca(gb: &mut GameBoy) -> anyhow::Result<u8> {
     Ok(1)
 }
 
-fn rrca(gb: &mut GameBoy) -> anyhow::Result<u8> {
+fn rrca(gb: &mut GameBoy) -> Result<u8> {
     let (result, carry) = rotate_right(gb.a);
     gb.set_z(false);
     gb.set_n(false);
@@ -276,7 +255,7 @@ fn rrca(gb: &mut GameBoy) -> anyhow::Result<u8> {
     Ok(1)
 }
 
-fn rla(gb: &mut GameBoy) -> anyhow::Result<u8> {
+fn rla(gb: &mut GameBoy) -> Result<u8> {
     let (result, carry) = rotate_left_with_carry(gb.a, gb.get_c());
     gb.set_z(false);
     gb.set_n(false);
@@ -286,7 +265,7 @@ fn rla(gb: &mut GameBoy) -> anyhow::Result<u8> {
     Ok(1)
 }
 
-fn rra(gb: &mut GameBoy) -> anyhow::Result<u8> {
+fn rra(gb: &mut GameBoy) -> Result<u8> {
     let (result, carry) = rotate_right_with_carry(gb.a, gb.get_c());
     gb.set_z(false);
     gb.set_n(false);
@@ -296,21 +275,21 @@ fn rra(gb: &mut GameBoy) -> anyhow::Result<u8> {
     Ok(1)
 }
 
-fn daa(gb: &mut GameBoy) -> anyhow::Result<u8> {
-    if gb.get_n() {
+fn daa(gb: &mut GameBoy) -> Result<u8> {
+    if !gb.get_n() {
         if gb.get_c() || gb.a > 0x99 {
-            gb.a += 0x60;
+            gb.a = gb.a.wrapping_add(0x60);
             gb.set_c(true);
         }
         if gb.get_h() || (gb.a & 0x0f) > 0x09 {
-            gb.a += 0x6;
+            gb.a = gb.a.wrapping_add(0x6);
         }
     } else {
         if gb.get_c() {
-            gb.a -= 0x60;
+            gb.a = gb.a.wrapping_sub(0x60);
         }
         if gb.get_h() {
-            gb.a -= 0x6;
+            gb.a = gb.a.wrapping_sub(0x6);
         }
     }
     gb.set_z(gb.a == 0);
@@ -318,35 +297,36 @@ fn daa(gb: &mut GameBoy) -> anyhow::Result<u8> {
     Ok(1)
 }
 
-fn cpl(gb: &mut GameBoy) -> anyhow::Result<u8> {
+fn cpl(gb: &mut GameBoy) -> Result<u8> {
     gb.a = !gb.a;
     gb.set_n(true);
     gb.set_h(true);
     Ok(1)
 }
 
-fn scf(gb: &mut GameBoy) -> anyhow::Result<u8> {
+fn scf(gb: &mut GameBoy) -> Result<u8> {
     gb.set_n(false);
     gb.set_h(false);
     gb.set_c(true);
     Ok(1)
 }
 
-fn ccf(gb: &mut GameBoy) -> anyhow::Result<u8> {
+fn ccf(gb: &mut GameBoy) -> Result<u8> {
     gb.set_n(false);
     gb.set_h(false);
     gb.set_c(!gb.get_c());
     Ok(1)
 }
 
-fn jr_n8(gb: &mut GameBoy) -> anyhow::Result<u8> {
-    gb.pc = gb.pc.wrapping_add_signed(gb.read_n8() as i16);
+fn jr_n8(gb: &mut GameBoy) -> Result<u8> {
+    let offset = i16::from(gb.read_n8()? as i8);
+    gb.pc = gb.pc.wrapping_add_signed(offset);
     Ok(3)
 }
 
-fn jr_cond_n8(gb: &mut GameBoy, instruction: u8) -> anyhow::Result<u8> {
+fn jr_cond_n8(gb: &mut GameBoy, instruction: u8) -> Result<u8> {
     let cond = get_bits(instruction, 4, 3);
-    let offset = gb.read_n8() as i16;
+    let offset = i16::from(gb.read_n8()? as i8);
     Ok(if gb.read_cond(cond)? {
         gb.pc = gb.pc.wrapping_add_signed(offset);
         3
@@ -355,15 +335,17 @@ fn jr_cond_n8(gb: &mut GameBoy, instruction: u8) -> anyhow::Result<u8> {
     })
 }
 
-fn stop() -> anyhow::Result<u8> {
+fn stop(gb: &mut GameBoy) -> Result<u8> {
+    gb.halted = true;
     Ok(1)
 }
 
-fn halt() -> anyhow::Result<u8> {
+fn halt(gb: &mut GameBoy) -> Result<u8> {
+    gb.halted = true;
     Ok(1)
 }
 
-fn ld_r8_r8(gb: &mut GameBoy, instruction: u8) -> anyhow::Result<u8> {
+fn ld_r8_r8(gb: &mut GameBoy, instruction: u8) -> Result<u8> {
     let source = get_bits(instruction, 2, 0);
     let dest = get_bits(instruction, 5, 3);
     let (value, access_type) = gb.read_r8(source)?;
@@ -373,7 +355,7 @@ fn ld_r8_r8(gb: &mut GameBoy, instruction: u8) -> anyhow::Result<u8> {
     })
 }
 
-fn add_a_r8(gb: &mut GameBoy, instruction: u8) -> anyhow::Result<u8> {
+fn add_a_r8(gb: &mut GameBoy, instruction: u8) -> Result<u8> {
     let reg = get_bits(instruction, 2, 0);
     let (operand, access_type) = gb.read_r8(reg)?;
     gb.a = add_and_set_flags_no_carry(gb, gb.a, operand);
@@ -383,7 +365,7 @@ fn add_a_r8(gb: &mut GameBoy, instruction: u8) -> anyhow::Result<u8> {
     })
 }
 
-fn adc_a_r8(gb: &mut GameBoy, instruction: u8) -> anyhow::Result<u8> {
+fn adc_a_r8(gb: &mut GameBoy, instruction: u8) -> Result<u8> {
     let reg = get_bits(instruction, 2, 0);
     let (operand, access_type) = gb.read_r8(reg)?;
     gb.a = add_and_set_flags_with_carry(gb, gb.a, operand);
@@ -393,7 +375,7 @@ fn adc_a_r8(gb: &mut GameBoy, instruction: u8) -> anyhow::Result<u8> {
     })
 }
 
-fn sub_a_r8(gb: &mut GameBoy, instruction: u8) -> anyhow::Result<u8> {
+fn sub_a_r8(gb: &mut GameBoy, instruction: u8) -> Result<u8> {
     let reg = get_bits(instruction, 2, 0);
     let (operand, access_type) = gb.read_r8(reg)?;
     gb.a = sub_and_set_flags_no_carry(gb, gb.a, operand);
@@ -402,7 +384,7 @@ fn sub_a_r8(gb: &mut GameBoy, instruction: u8) -> anyhow::Result<u8> {
         Indirect => 2,
     })
 }
-fn sbc_a_r8(gb: &mut GameBoy, instruction: u8) -> anyhow::Result<u8> {
+fn sbc_a_r8(gb: &mut GameBoy, instruction: u8) -> Result<u8> {
     let reg = get_bits(instruction, 2, 0);
     let (operand, access_type) = gb.read_r8(reg)?;
     gb.a = sub_and_set_flags_with_carry(gb, gb.a, operand);
@@ -411,7 +393,7 @@ fn sbc_a_r8(gb: &mut GameBoy, instruction: u8) -> anyhow::Result<u8> {
         Indirect => 2,
     })
 }
-fn and_a_r8(gb: &mut GameBoy, instruction: u8) -> anyhow::Result<u8> {
+fn and_a_r8(gb: &mut GameBoy, instruction: u8) -> Result<u8> {
     let reg = get_bits(instruction, 2, 0);
     let (operand, access_type) = gb.read_r8(reg)?;
     gb.a = gb.a & operand;
@@ -424,7 +406,7 @@ fn and_a_r8(gb: &mut GameBoy, instruction: u8) -> anyhow::Result<u8> {
         Indirect => 2,
     })
 }
-fn xor_a_r8(gb: &mut GameBoy, instruction: u8) -> anyhow::Result<u8> {
+fn xor_a_r8(gb: &mut GameBoy, instruction: u8) -> Result<u8> {
     let reg = get_bits(instruction, 2, 0);
     let (operand, access_type) = gb.read_r8(reg)?;
     gb.a = gb.a ^ operand;
@@ -437,7 +419,7 @@ fn xor_a_r8(gb: &mut GameBoy, instruction: u8) -> anyhow::Result<u8> {
         Indirect => 2,
     })
 }
-fn or_a_r8(gb: &mut GameBoy, instruction: u8) -> anyhow::Result<u8> {
+fn or_a_r8(gb: &mut GameBoy, instruction: u8) -> Result<u8> {
     let reg = get_bits(instruction, 2, 0);
     let (operand, access_type) = gb.read_r8(reg)?;
     gb.a = gb.a | operand;
@@ -450,7 +432,7 @@ fn or_a_r8(gb: &mut GameBoy, instruction: u8) -> anyhow::Result<u8> {
         Indirect => 2,
     })
 }
-fn cp_a_r8(gb: &mut GameBoy, instruction: u8) -> anyhow::Result<u8> {
+fn cp_a_r8(gb: &mut GameBoy, instruction: u8) -> Result<u8> {
     let reg = get_bits(instruction, 2, 0);
     let (operand, access_type) = gb.read_r8(reg)?;
     sub_and_set_flags_no_carry(gb, gb.a, operand);
@@ -460,30 +442,30 @@ fn cp_a_r8(gb: &mut GameBoy, instruction: u8) -> anyhow::Result<u8> {
     })
 }
 
-fn add_a_n8(gb: &mut GameBoy) -> anyhow::Result<u8> {
-    let operand = gb.read_n8();
+fn add_a_n8(gb: &mut GameBoy) -> Result<u8> {
+    let operand = gb.read_n8()?;
     gb.a = add_and_set_flags_no_carry(gb, gb.a, operand);
     Ok(2)
 }
 
-fn adc_a_n8(gb: &mut GameBoy) -> anyhow::Result<u8> {
-    let operand = gb.read_n8();
+fn adc_a_n8(gb: &mut GameBoy) -> Result<u8> {
+    let operand = gb.read_n8()?;
     gb.a = add_and_set_flags_with_carry(gb, gb.a, operand);
     Ok(2)
 }
 
-fn sub_a_n8(gb: &mut GameBoy) -> anyhow::Result<u8> {
-    let operand = gb.read_n8();
+fn sub_a_n8(gb: &mut GameBoy) -> Result<u8> {
+    let operand = gb.read_n8()?;
     gb.a = sub_and_set_flags_no_carry(gb, gb.a, operand);
     Ok(2)
 }
-fn sbc_a_n8(gb: &mut GameBoy) -> anyhow::Result<u8> {
-    let operand = gb.read_n8();
+fn sbc_a_n8(gb: &mut GameBoy) -> Result<u8> {
+    let operand = gb.read_n8()?;
     gb.a = sub_and_set_flags_with_carry(gb, gb.a, operand);
     Ok(2)
 }
-fn and_a_n8(gb: &mut GameBoy) -> anyhow::Result<u8> {
-    let operand = gb.read_n8();
+fn and_a_n8(gb: &mut GameBoy) -> Result<u8> {
+    let operand = gb.read_n8()?;
     gb.a = gb.a & operand;
     gb.set_z(gb.a == 0);
     gb.set_n(false);
@@ -491,8 +473,8 @@ fn and_a_n8(gb: &mut GameBoy) -> anyhow::Result<u8> {
     gb.set_c(false);
     Ok(2)
 }
-fn xor_a_n8(gb: &mut GameBoy) -> anyhow::Result<u8> {
-    let operand = gb.read_n8();
+fn xor_a_n8(gb: &mut GameBoy) -> Result<u8> {
+    let operand = gb.read_n8()?;
     gb.a = gb.a ^ operand;
     gb.set_z(gb.a == 0);
     gb.set_n(false);
@@ -500,8 +482,8 @@ fn xor_a_n8(gb: &mut GameBoy) -> anyhow::Result<u8> {
     gb.set_c(false);
     Ok(2)
 }
-fn or_a_n8(gb: &mut GameBoy) -> anyhow::Result<u8> {
-    let operand = gb.read_n8();
+fn or_a_n8(gb: &mut GameBoy) -> Result<u8> {
+    let operand = gb.read_n8()?;
     gb.a = gb.a | operand;
     gb.set_z(gb.a == 0);
     gb.set_n(false);
@@ -509,16 +491,17 @@ fn or_a_n8(gb: &mut GameBoy) -> anyhow::Result<u8> {
     gb.set_c(false);
     Ok(2)
 }
-fn cp_a_n8(gb: &mut GameBoy) -> anyhow::Result<u8> {
-    let operand = gb.read_n8();
+fn cp_a_n8(gb: &mut GameBoy) -> Result<u8> {
+    let operand = gb.read_n8()?;
     sub_and_set_flags(gb, gb.a, operand, None);
     Ok(2)
 }
 
-fn ret_cond(gb: &mut GameBoy, instruction: u8) -> anyhow::Result<u8> {
+fn ret_cond(gb: &mut GameBoy, instruction: u8) -> Result<u8> {
     let cond = get_bits(instruction, 4, 3);
-    let dest = gb.pop_16();
-    Ok(if gb.read_cond(cond)? {
+    let should_ret = gb.read_cond(cond)?;
+    Ok(if should_ret {
+        let dest = gb.pop_16()?;
         gb.pc = dest;
         5
     } else {
@@ -526,20 +509,20 @@ fn ret_cond(gb: &mut GameBoy, instruction: u8) -> anyhow::Result<u8> {
     })
 }
 
-fn ret(gb: &mut GameBoy) -> anyhow::Result<u8> {
-    gb.pc = gb.pop_16();
+fn ret(gb: &mut GameBoy) -> Result<u8> {
+    gb.pc = gb.pop_16()?;
     Ok(4)
 }
 
-fn reti(gb: &mut GameBoy) -> anyhow::Result<u8> {
-    gb.pc = gb.pop_16();
-    gb.ime = true;
+fn reti(gb: &mut GameBoy) -> Result<u8> {
+    gb.pc = gb.pop_16()?;
+    gb.set_ime(true)?;
     Ok(4)
 }
 
-fn jp_cond_n16(gb: &mut GameBoy, instruction: u8) -> anyhow::Result<u8> {
+fn jp_cond_n16(gb: &mut GameBoy, instruction: u8) -> Result<u8> {
     let cond = get_bits(instruction, 4, 3);
-    let dest = gb.read_n16();
+    let dest = gb.read_n16()?;
     Ok(if gb.read_cond(cond)? {
         gb.pc = dest;
         4
@@ -548,21 +531,21 @@ fn jp_cond_n16(gb: &mut GameBoy, instruction: u8) -> anyhow::Result<u8> {
     })
 }
 
-fn jp_n16(gb: &mut GameBoy) -> anyhow::Result<u8> {
-    gb.pc = gb.read_n16();
+fn jp_n16(gb: &mut GameBoy) -> Result<u8> {
+    gb.pc = gb.read_n16()?;
     Ok(4)
 }
 
-fn jp_hl(gb: &mut GameBoy) -> anyhow::Result<u8> {
+fn jp_hl(gb: &mut GameBoy) -> Result<u8> {
     gb.pc = gb.read_hl()?;
     Ok(1)
 }
 
-fn call_cond_n16(gb: &mut GameBoy, instruction: u8) -> anyhow::Result<u8> {
+fn call_cond_n16(gb: &mut GameBoy, instruction: u8) -> Result<u8> {
     let cond = get_bits(instruction, 4, 3);
-    let addr = gb.read_n16();
+    let addr = gb.read_n16()?;
     Ok(if gb.read_cond(cond)? {
-        gb.push_16(gb.pc);
+        gb.push_16(gb.pc)?;
         gb.pc = addr;
         6
     } else {
@@ -570,97 +553,97 @@ fn call_cond_n16(gb: &mut GameBoy, instruction: u8) -> anyhow::Result<u8> {
     })
 }
 
-fn call_n16(gb: &mut GameBoy) -> anyhow::Result<u8> {
-    let addr = gb.read_n16();
-    gb.push_16(gb.pc);
+fn call_n16(gb: &mut GameBoy) -> Result<u8> {
+    let addr = gb.read_n16()?;
+    gb.push_16(gb.pc)?;
     gb.pc = addr;
     Ok(6)
 }
 
-fn rst(gb: &mut GameBoy, instruction: u8) -> anyhow::Result<u8> {
+fn rst(gb: &mut GameBoy, instruction: u8) -> Result<u8> {
     let operand = get_bits(instruction, 5, 3);
     let addr = u16::from(operand) * 8;
-    gb.push_16(gb.pc);
+    gb.push_16(gb.pc)?;
     gb.pc = addr;
     Ok(4)
 }
 
-fn pop(gb: &mut GameBoy, instruction: u8) -> anyhow::Result<u8> {
-    let value = gb.pop_16();
+fn pop(gb: &mut GameBoy, instruction: u8) -> Result<u8> {
+    let value = gb.pop_16()?;
     let reg = get_bits(instruction, 5, 4);
     gb.write_r16_stk(reg, value)?;
     Ok(3)
 }
 
-fn push(gb: &mut GameBoy, instruction: u8) -> anyhow::Result<u8> {
+fn push(gb: &mut GameBoy, instruction: u8) -> Result<u8> {
     let reg = get_bits(instruction, 5, 4);
-    gb.push_16(gb.read_r16_stk(reg)?);
+    gb.push_16(gb.read_r16_stk(reg)?)?;
     Ok(4)
 }
 
-fn ldh_ind_c_a(gb: &mut GameBoy) -> anyhow::Result<u8> {
-    gb.write_8(0xFF00 + u16::from(gb.c), gb.a);
+fn ldh_ind_c_a(gb: &mut GameBoy) -> Result<u8> {
+    gb.write_8(0xFF00 + u16::from(gb.c), gb.a)?;
     Ok(2)
 }
 
-fn ldh_ind_n8_a(gb: &mut GameBoy) -> anyhow::Result<u8> {
-    let address = 0xFF00 + u16::from(gb.read_n8());
-    gb.write_8(address, gb.a);
+fn ldh_ind_n8_a(gb: &mut GameBoy) -> Result<u8> {
+    let address = 0xFF00 + u16::from(gb.read_n8()?);
+    gb.write_8(address, gb.a)?;
     Ok(3)
 }
 
-fn ld_ind_n16_a(gb: &mut GameBoy) -> anyhow::Result<u8> {
-    let address = gb.read_n16();
-    gb.write_8(address, gb.a);
+fn ld_ind_n16_a(gb: &mut GameBoy) -> Result<u8> {
+    let address = gb.read_n16()?;
+    gb.write_8(address, gb.a)?;
     Ok(4)
 }
 
-fn ldh_a_ind_c(gb: &mut GameBoy) -> anyhow::Result<u8> {
-    gb.a = gb.read_8(0xFF00 + u16::from(gb.c));
+fn ldh_a_ind_c(gb: &mut GameBoy) -> Result<u8> {
+    gb.a = gb.read_8(0xFF00 + u16::from(gb.c))?;
     Ok(2)
 }
 
-fn ldh_a_ind_n8(gb: &mut GameBoy) -> anyhow::Result<u8> {
-    let address = 0xFF00 + u16::from(gb.read_n8());
-    gb.a = gb.read_8(address);
+fn ldh_a_ind_n8(gb: &mut GameBoy) -> Result<u8> {
+    let address = 0xFF00 + u16::from(gb.read_n8()?);
+    gb.a = gb.read_8(address)?;
     Ok(3)
 }
 
-fn ld_a_ind_n16(gb: &mut GameBoy) -> anyhow::Result<u8> {
-    let address = gb.read_n16();
-    gb.a = gb.read_8(address);
+fn ld_a_ind_n16(gb: &mut GameBoy) -> Result<u8> {
+    let address = gb.read_n16()?;
+    gb.a = gb.read_8(address)?;
     Ok(4)
 }
 
-fn add_sp_n8(gb: &mut GameBoy) -> anyhow::Result<u8> {
-    let operand = gb.read_n8() as i8;
+fn add_sp_n8(gb: &mut GameBoy) -> Result<u8> {
+    let operand = gb.read_n8()? as i8;
     gb.sp = add_signed_and_set_flags(gb, gb.sp, operand);
     Ok(4)
 }
 
-fn ld_hl_sp_plus_n8(gb: &mut GameBoy) -> anyhow::Result<u8> {
-    let operand = gb.read_n8() as i8;
+fn ld_hl_sp_plus_n8(gb: &mut GameBoy) -> Result<u8> {
+    let operand = gb.read_n8()? as i8;
     let result = add_signed_and_set_flags(gb, gb.sp, operand);
     gb.write_hl(result)?;
     Ok(3)
 }
 
-fn ld_sp_hl(gb: &mut GameBoy) -> anyhow::Result<u8> {
-    gb.write_hl(gb.sp)?;
+fn ld_sp_hl(gb: &mut GameBoy) -> Result<u8> {
+    gb.sp = gb.read_hl()?;
     Ok(2)
 }
 
-fn di(gb: &mut GameBoy) -> anyhow::Result<u8> {
-    gb.ime = false;
+fn di(gb: &mut GameBoy) -> Result<u8> {
+    gb.set_ime(false)?;
     Ok(1)
 }
 
-fn ei(gb: &mut GameBoy) -> anyhow::Result<u8> {
-    gb.ime = true;
+fn ei(gb: &mut GameBoy) -> Result<u8> {
+    gb.set_ime(true)?;
     Ok(1)
 }
 
-fn rlc(gb: &mut GameBoy, instruction: u8) -> anyhow::Result<u8> {
+fn rlc(gb: &mut GameBoy, instruction: u8) -> Result<u8> {
     let reg = get_bits(instruction, 2, 0);
     let (operand, access_type) = gb.read_r8(reg)?;
     let (result, carry) = rotate_left(operand);
@@ -675,7 +658,7 @@ fn rlc(gb: &mut GameBoy, instruction: u8) -> anyhow::Result<u8> {
     })
 }
 
-fn rrc(gb: &mut GameBoy, instruction: u8) -> anyhow::Result<u8> {
+fn rrc(gb: &mut GameBoy, instruction: u8) -> Result<u8> {
     let reg = get_bits(instruction, 2, 0);
     let (operand, access_type) = gb.read_r8(reg)?;
     let (result, carry) = rotate_right(operand);
@@ -690,7 +673,7 @@ fn rrc(gb: &mut GameBoy, instruction: u8) -> anyhow::Result<u8> {
     })
 }
 
-fn rl(gb: &mut GameBoy, instruction: u8) -> anyhow::Result<u8> {
+fn rl(gb: &mut GameBoy, instruction: u8) -> Result<u8> {
     let reg = get_bits(instruction, 2, 0);
     let (operand, access_type) = gb.read_r8(reg)?;
     let (result, carry) = rotate_left_with_carry(operand, gb.get_c());
@@ -705,7 +688,7 @@ fn rl(gb: &mut GameBoy, instruction: u8) -> anyhow::Result<u8> {
     })
 }
 
-fn rr(gb: &mut GameBoy, instruction: u8) -> anyhow::Result<u8> {
+fn rr(gb: &mut GameBoy, instruction: u8) -> Result<u8> {
     let reg = get_bits(instruction, 2, 0);
     let (operand, access_type) = gb.read_r8(reg)?;
     let (result, carry) = rotate_right_with_carry(operand, gb.get_c());
@@ -720,7 +703,7 @@ fn rr(gb: &mut GameBoy, instruction: u8) -> anyhow::Result<u8> {
     })
 }
 
-fn sla(gb: &mut GameBoy, instruction: u8) -> anyhow::Result<u8> {
+fn sla(gb: &mut GameBoy, instruction: u8) -> Result<u8> {
     let reg = get_bits(instruction, 2, 0);
     let (operand, access_type) = gb.read_r8(reg)?;
     let (result, carry) = shift_left(operand);
@@ -728,13 +711,14 @@ fn sla(gb: &mut GameBoy, instruction: u8) -> anyhow::Result<u8> {
     gb.set_n(false);
     gb.set_h(false);
     gb.set_c(carry);
+    gb.write_r8(reg, result)?;
     Ok(match access_type {
         Direct => 2,
         Indirect => 4,
     })
 }
 
-fn sra(gb: &mut GameBoy, instruction: u8) -> anyhow::Result<u8> {
+fn sra(gb: &mut GameBoy, instruction: u8) -> Result<u8> {
     let reg = get_bits(instruction, 2, 0);
     let (operand, access_type) = gb.read_r8(reg)?;
     let (result, carry) = shift_right_arithmetic(operand);
@@ -742,27 +726,29 @@ fn sra(gb: &mut GameBoy, instruction: u8) -> anyhow::Result<u8> {
     gb.set_n(false);
     gb.set_h(false);
     gb.set_c(carry);
+    gb.write_r8(reg, result)?;
     Ok(match access_type {
         Direct => 2,
         Indirect => 4,
     })
 }
 
-fn swap(gb: &mut GameBoy, instruction: u8) -> anyhow::Result<u8> {
+fn swap(gb: &mut GameBoy, instruction: u8) -> Result<u8> {
     let reg = get_bits(instruction, 2, 0);
     let (operand, access_type) = gb.read_r8(reg)?;
-    let result = operand >> 4 + operand << 4;
+    let result = operand.wrapping_shr(4) + operand.wrapping_shl(4);
     gb.set_z(result == 0);
     gb.set_n(false);
     gb.set_h(false);
     gb.set_c(false);
+    gb.write_r8(reg, result)?;
     Ok(match access_type {
         Direct => 2,
         Indirect => 4,
     })
 }
 
-fn srl(gb: &mut GameBoy, instruction: u8) -> anyhow::Result<u8> {
+fn srl(gb: &mut GameBoy, instruction: u8) -> Result<u8> {
     let reg = get_bits(instruction, 2, 0);
     let (operand, access_type) = gb.read_r8(reg)?;
     let (result, carry) = shift_right_logical(operand);
@@ -770,17 +756,18 @@ fn srl(gb: &mut GameBoy, instruction: u8) -> anyhow::Result<u8> {
     gb.set_n(false);
     gb.set_h(false);
     gb.set_c(carry);
+    gb.write_r8(reg, result)?;
     Ok(match access_type {
         Direct => 2,
         Indirect => 4,
     })
 }
 
-fn bit(gb: &mut GameBoy, instruction: u8) -> anyhow::Result<u8> {
+fn bit(gb: &mut GameBoy, instruction: u8) -> Result<u8> {
     let reg = get_bits(instruction, 2, 0);
     let bit = get_bits(instruction, 5, 3);
     let (operand, access_type) = gb.read_r8(reg)?;
-    gb.set_z((operand >> bit) & 1 == 1);
+    gb.set_z((operand >> bit) & 1 == 0);
     gb.set_n(false);
     gb.set_h(true);
     Ok(match access_type {
@@ -789,7 +776,7 @@ fn bit(gb: &mut GameBoy, instruction: u8) -> anyhow::Result<u8> {
     })
 }
 
-fn res(gb: &mut GameBoy, instruction: u8) -> anyhow::Result<u8> {
+fn res(gb: &mut GameBoy, instruction: u8) -> Result<u8> {
     let reg = get_bits(instruction, 2, 0);
     let bit = get_bits(instruction, 5, 3);
     let (operand, access_type) = gb.read_r8(reg)?;
@@ -800,7 +787,7 @@ fn res(gb: &mut GameBoy, instruction: u8) -> anyhow::Result<u8> {
     })
 }
 
-fn set(gb: &mut GameBoy, instruction: u8) -> anyhow::Result<u8> {
+fn set(gb: &mut GameBoy, instruction: u8) -> Result<u8> {
     let reg = get_bits(instruction, 2, 0);
     let bit = get_bits(instruction, 5, 3);
     let (operand, access_type) = gb.read_r8(reg)?;
@@ -811,8 +798,8 @@ fn set(gb: &mut GameBoy, instruction: u8) -> anyhow::Result<u8> {
     })
 }
 
-fn prefix(gb: &mut GameBoy) -> anyhow::Result<u8> {
-    let instruction = gb.read_and_increment_pc();
+fn prefix(gb: &mut GameBoy) -> Result<u8> {
+    let instruction = gb.read_and_increment_pc()?;
     match instruction {
         (0o00..=0o07) => rlc(gb, instruction),
         (0o10..=0o17) => rrc(gb, instruction),
@@ -842,7 +829,7 @@ fn add_and_set_flags(gb: &mut GameBoy, a: u8, b: u8, carry: Option<u8>) -> u8 {
     let (result, is_carry_2) = result.overflowing_add(carry_or_0);
     gb.set_z(result == 0);
     gb.set_n(false);
-    gb.set_h(is_add_half_carry_8(a, b) || is_add_half_carry_8(a + b, carry_or_0));
+    gb.set_h(is_add_half_carry_8(a, b) || is_add_half_carry_8(a.wrapping_add(b), carry_or_0));
     gb.set_c(is_carry | is_carry_2);
     result
 }
@@ -861,7 +848,7 @@ fn sub_and_set_flags(gb: &mut GameBoy, a: u8, b: u8, carry: Option<u8>) -> u8 {
     let (result, is_carry_2) = result.overflowing_sub(carry_or_0);
     gb.set_z(result == 0);
     gb.set_n(true);
-    gb.set_h(is_sub_half_carry_8(a, b) || is_sub_half_carry_8(a - b, carry_or_0));
+    gb.set_h(is_sub_half_carry_8(a, b) || is_sub_half_carry_8(a.wrapping_sub(b), carry_or_0));
     gb.set_c(is_carry || is_carry_2);
     result
 }
@@ -869,8 +856,8 @@ fn sub_and_set_flags(gb: &mut GameBoy, a: u8, b: u8, carry: Option<u8>) -> u8 {
 fn add_signed_and_set_flags(gb: &mut GameBoy, a: u16, b: i8) -> u16 {
     gb.set_z(false);
     gb.set_n(false);
-    gb.set_h(is_signed_add_half_carry_16_8(a, b));
-    gb.set_c(is_signed_add_carry_16_8(a, b));
+    gb.set_h(is_add_half_carry_8(a as u8, b as u8));
+    gb.set_c((a as u8).overflowing_add(b as u8).1);
     a.wrapping_add_signed(i16::from(b))
 }
 

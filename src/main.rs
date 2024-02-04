@@ -1,14 +1,19 @@
+mod cartridge;
+mod external_ram;
 mod gb;
+mod high_ram;
 mod instructions;
+mod interrupt_enable_register;
+mod io_registers;
+mod mirror_ram;
+mod not_usable;
+mod object_attribute_memory;
+mod test;
+mod video_ram;
+mod work_ram;
 
-use crate::gb::GameBoy;
-use crate::instructions::execute_next_instruction;
 use anyhow::Result;
 
 fn main() -> Result<()> {
-    let mut gb = GameBoy::new();
-
-    execute_next_instruction(&mut gb)?;
-
     Ok(())
 }
