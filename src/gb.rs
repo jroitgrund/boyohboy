@@ -1,23 +1,40 @@
-use crate::cartridge::Cartridge;
-use crate::external_ram::ExternalRam;
 use crate::gb::AccessType::{Direct, Indirect};
-use crate::high_ram::HighRam;
-use crate::interrupt_enable_register::InterruptEnableRegister;
-use crate::io_registers::IORegisters;
-use crate::not_usable::NotUsable;
-use crate::object_attribute_memory::ObjectAttributeMemory;
-use crate::video_ram::VideoRam;
-use crate::work_ram::WorkRam;
 use anyhow::anyhow;
 use anyhow::Result;
 
+use crate::gb::cartridge::Cartridge;
+use crate::gb::external_ram::ExternalRam;
+use crate::gb::high_ram::HighRam;
+use crate::gb::instructions::InstructionResult;
+use crate::gb::interrupt_enable_register::InterruptEnableRegister;
+use crate::gb::io_registers::IORegisters;
+use crate::gb::not_usable::NotUsable;
+use crate::gb::object_attribute_memory::ObjectAttributeMemory;
+use crate::gb::ram::Ram;
+use crate::gb::video_ram::VideoRam;
+use crate::gb::Halt::Running;
 use std::ops;
-use std::ops::DerefMut;
 use std::path::Path;
+use Halt::{HaltBug, Halted};
+
+mod bits;
+mod cartridge;
+mod clock;
+mod external_ram;
+mod high_ram;
+mod instructions;
+mod interrupt_enable_register;
+mod interrupts;
+mod introspection;
+mod io_registers;
+mod not_usable;
+mod object_attribute_memory;
+mod ram;
+mod video_ram;
 
 const R16_HL: u8 = 2;
 
-pub enum AccessType {
+enum AccessType {
     Direct,
     Indirect,
 }
@@ -34,21 +51,39 @@ impl ops::Add<AccessType> for AccessType {
 }
 
 pub struct GameBoy {
-    pub halted: bool,
-    pub a: u8,
-    pub f: u8,
-    pub b: u8,
-    pub c: u8,
-    pub d: u8,
-    pub e: u8,
-    pub h: u8,
-    pub l: u8,
-    pub sp: u16,
-    pub pc: u16,
+    gb: GameBoyImpl,
+}
+
+impl GameBoy {
+    pub fn new(cartridge: &Path) -> Result<GameBoy> {
+        Ok(GameBoy {
+            gb: GameBoyImpl::new(cartridge)?,
+        })
+    }
+
+    pub fn step(&mut self) -> Result<(Option<String>, String)> {
+        self.gb.step()
+    }
+}
+
+pub struct GameBoyImpl {
+    halt: Halt,
+    cycles: usize,
+    ime: bool,
+    a: u8,
+    f: u8,
+    b: u8,
+    c: u8,
+    d: u8,
+    e: u8,
+    h: u8,
+    l: u8,
+    sp: u16,
+    pc: u16,
     cartridge: Cartridge,
     video_ram: VideoRam,
     external_ram: ExternalRam,
-    work_ram: WorkRam,
+    ram: Ram,
     object_attribute_memory: ObjectAttributeMemory,
     not_usable: NotUsable,
     io_registers: IORegisters,
@@ -56,46 +91,63 @@ pub struct GameBoy {
     interrupt_enable_register: InterruptEnableRegister,
 }
 
-pub trait MemoryMappedDevice {
+trait MemoryMappedDevice {
     fn read(&self, addr: u16) -> Result<u8>;
     fn write(&mut self, addr: u16, val: u8) -> Result<()>;
 }
 
-impl GameBoy {
-    pub fn serial(&mut self) -> Result<Option<String>> {
-        if self.read_8(0xff02)? == 0x81 {
-            let serial = self.read_8(0xff01)?;
-            let log = format!("{}", serial as char);
-            self.write_8(0xff02, 0x0)?;
-            Ok(Some(log))
-        } else {
-            Ok(None)
-        }
-    }
-    pub fn log(&mut self) -> Result<String> {
-        let pc = self.read_8(self.pc)?;
-        let pc_1 = self.read_8(self.pc + 1)?;
-        let pc_2 = self.read_8(self.pc + 2)?;
-        let pc_3 = self.read_8(self.pc + 3)?;
-        Ok(format!(
-            "A: {:02X?} F: {:02X?} B: {:02X?} C: {:02X?} D: {:02X?} E: {:02X?} H: {:02X?} L: {:02X?} SP: {:04X?} PC: 00:{:04X?} ({:02X?} {:02X?} {:02X?} {:02X?})\n",
-            self.a, self.f, self.b, self.c, self.d, self.e, self.h, self.l, self.sp, self.pc, pc, pc_1, pc_2, pc_3
-        ))
-    }
+#[derive(PartialEq)]
+enum Halt {
+    Running,
+    Halted,
+    HaltBug,
+}
 
-    pub fn set_ime(&mut self, enable: bool) -> Result<()> {
-        self.interrupt_enable_register.write(
-            0,
-            match enable {
-                true => 1,
-                false => 0,
+impl GameBoyImpl {
+    fn step(&mut self) -> Result<(Option<String>, String)> {
+        let instruction_result = match self.halt {
+            Running | HaltBug => {
+                let instruction_result = if self.halt == Running {
+                    self.execute_next_instruction()?
+                } else {
+                    self.execute_next_instruction_with_halt_bug()?
+                };
+
+                instruction_result
+            }
+            Halted => InstructionResult {
+                is_halt: false,
+                cycles: 1,
             },
-        )
+        };
+        self.tick(usize::from(instruction_result.cycles))?;
+
+        let interrupt_result = self.handle_interrupts()?;
+        self.tick(usize::from(interrupt_result.cycles))?;
+
+        self.halt = match (
+            interrupt_result.interrupt_requested,
+            instruction_result.is_halt,
+            interrupt_result.interrupts_enabled,
+        ) {
+            (true, true, false) => HaltBug,
+            (true, _, _) => Running,
+            (false, true, _) => Halted,
+            (false, false, _) => match self.halt {
+                Halted => Halted,
+                HaltBug => Running,
+                Running => Running,
+            },
+        };
+
+        Ok((self.serial()?, self.log()?))
     }
 
-    pub fn new(cartridge: &Path) -> Result<GameBoy> {
-        let mut gb = GameBoy {
-            halted: false,
+    pub fn new(cartridge: &Path) -> Result<GameBoyImpl> {
+        let mut gb = GameBoyImpl {
+            halt: Running,
+            cycles: 0,
+            ime: false,
             a: 0x01,
             f: 0xB0,
             b: 0x00,
@@ -109,7 +161,7 @@ impl GameBoy {
             cartridge: Cartridge::new(cartridge)?,
             video_ram: VideoRam::new(),
             external_ram: ExternalRam::new(),
-            work_ram: WorkRam::new(),
+            ram: Ram::new(),
             object_attribute_memory: ObjectAttributeMemory::new(),
             not_usable: NotUsable {},
             io_registers: IORegisters::new(),
@@ -175,25 +227,22 @@ impl GameBoy {
         Ok(gb)
     }
 
-    fn get_device_and_offset(
-        &mut self,
-        addr: u16,
-    ) -> Result<(Box<&mut dyn MemoryMappedDevice>, u16)> {
+    fn get_device_and_offset(&mut self, addr: u16) -> Result<(&mut dyn MemoryMappedDevice, u16)> {
         match addr {
-            0x0000..=0x7FFF => Ok((Box::new(&mut self.cartridge), addr)),
-            0x8000..=0x9FFF => Ok((Box::new(&mut self.video_ram), addr - 0x8000)),
-            0xA000..=0xBFFF => Ok((Box::new(&mut self.external_ram), addr - 0xA000)),
-            0xC000..=0xDFFF => Ok((Box::new(&mut self.work_ram), addr - 0xC000)),
-            0xE000..=0xFDFF => Ok((Box::new(&mut self.work_ram), addr - 0xE000)),
-            0xFE00..=0xFE9F => Ok((Box::new(&mut self.object_attribute_memory), addr - 0xFE00)),
-            0xFEA0..=0xFEFF => Ok((Box::new(&mut self.not_usable), addr - 0xFEA0)),
-            0xFF00..=0xFF7F => Ok((Box::new(&mut self.io_registers), addr - 0xFF00)),
-            0xFF80..=0xFFFE => Ok((Box::new(&mut self.high_ram), addr - 0xFF80)),
-            0xFFFF..=0xFFFF => Ok((Box::new(&mut self.interrupt_enable_register), addr - 0xFFFF)),
+            0x0000..=0x7FFF => Ok((&mut self.cartridge, addr)),
+            0x8000..=0x9FFF => Ok((&mut self.video_ram, addr - 0x8000)),
+            0xA000..=0xBFFF => Ok((&mut self.external_ram, addr - 0xA000)),
+            0xC000..=0xDFFF => Ok((self.ram.work_ram(), addr - 0xC000)),
+            0xE000..=0xFDFF => Ok((self.ram.mirror_ram(), addr - 0xE000)),
+            0xFE00..=0xFE9F => Ok((&mut self.object_attribute_memory, addr - 0xFE00)),
+            0xFEA0..=0xFEFF => Ok((&mut self.not_usable, addr - 0xFEA0)),
+            0xFF00..=0xFF7F => Ok((&mut self.io_registers, addr - 0xFF00)),
+            0xFF80..=0xFFFE => Ok((&mut self.high_ram, addr - 0xFF80)),
+            0xFFFF..=0xFFFF => Ok((&mut self.interrupt_enable_register, addr - 0xFFFF)),
         }
     }
 
-    pub fn read_8(&mut self, addr: u16) -> Result<u8> {
+    fn read_8(&mut self, addr: u16) -> Result<u8> {
         let (device, offset) = self.get_device_and_offset(addr)?;
         if addr == 0xFF44 {
             println!();
@@ -201,27 +250,27 @@ impl GameBoy {
         device.read(offset)
     }
 
-    pub fn write_8(&mut self, addr: u16, val: u8) -> Result<()> {
-        let (mut device, offset) = self.get_device_and_offset(addr)?;
+    fn write_8(&mut self, addr: u16, val: u8) -> Result<()> {
+        let (device, offset) = self.get_device_and_offset(addr)?;
         if addr == 0xFF44 {
             println!();
         }
-        device.deref_mut().write(offset, val)
+        device.write(offset, val)
     }
 
-    pub fn write_16(&mut self, addr: u16, val: u16) -> Result<()> {
+    fn write_16(&mut self, addr: u16, val: u16) -> Result<()> {
         let bytes = val.to_le_bytes();
         self.write_8(addr, bytes[0])?;
         self.write_8(addr + 1, bytes[1])
     }
 
-    pub fn read_and_increment_pc(&mut self) -> Result<u8> {
+    fn read_and_increment_pc(&mut self) -> Result<u8> {
         let result = self.read_8(self.pc)?;
         self.pc += 1;
         Ok(result)
     }
 
-    pub fn read_r8(&mut self, r: u8) -> anyhow::Result<(u8, AccessType)> {
+    fn read_r8(&mut self, r: u8) -> anyhow::Result<(u8, AccessType)> {
         match r {
             0 => Ok((self.b, Direct)),
             1 => Ok((self.c, Direct)),
@@ -235,7 +284,7 @@ impl GameBoy {
         }
     }
 
-    pub fn write_r8(&mut self, r: u8, val: u8) -> anyhow::Result<AccessType> {
+    fn write_r8(&mut self, r: u8, val: u8) -> anyhow::Result<AccessType> {
         match r {
             0 => {
                 self.b = val;
@@ -273,7 +322,7 @@ impl GameBoy {
         }
     }
 
-    pub fn read_r16(&self, r: u8) -> Result<u16> {
+    fn read_r16(&self, r: u8) -> Result<u16> {
         match r {
             0 => Ok(u16::from_be_bytes([self.b, self.c])),
             1 => Ok(u16::from_be_bytes([self.d, self.e])),
@@ -283,11 +332,11 @@ impl GameBoy {
         }
     }
 
-    pub fn read_hl(&self) -> Result<u16> {
+    fn read_hl(&self) -> Result<u16> {
         self.read_r16(R16_HL)
     }
 
-    pub fn write_r16(&mut self, r: u8, val: u16) -> Result<()> {
+    fn write_r16(&mut self, r: u8, val: u16) -> Result<()> {
         let bytes = val.to_be_bytes();
         match r {
             0 => Ok({
@@ -307,11 +356,11 @@ impl GameBoy {
         }
     }
 
-    pub fn write_hl(&mut self, val: u16) -> Result<()> {
+    fn write_hl(&mut self, val: u16) -> Result<()> {
         self.write_r16(R16_HL, val)
     }
 
-    pub fn r16_mem(&mut self, r: u8) -> anyhow::Result<u16> {
+    fn r16_mem(&mut self, r: u8) -> anyhow::Result<u16> {
         match r {
             0 | 1 => self.read_r16(r),
             2 => {
@@ -328,7 +377,7 @@ impl GameBoy {
         }
     }
 
-    pub fn read_r16_stk(&self, r: u8) -> anyhow::Result<u16> {
+    fn read_r16_stk(&self, r: u8) -> anyhow::Result<u16> {
         match r {
             0 | 1 | 2 => self.read_r16(r),
             3 => Ok(u16::from_be_bytes([self.a, self.f])),
@@ -336,7 +385,7 @@ impl GameBoy {
         }
     }
 
-    pub fn write_r16_stk(&mut self, r: u8, val: u16) -> Result<()> {
+    fn write_r16_stk(&mut self, r: u8, val: u16) -> Result<()> {
         match r {
             0 | 1 | 2 => self.write_r16(r, val),
             3 => Ok({
@@ -348,11 +397,11 @@ impl GameBoy {
         }
     }
 
-    pub fn read_n8(&mut self) -> Result<u8> {
+    fn read_n8(&mut self) -> Result<u8> {
         self.read_and_increment_pc()
     }
 
-    pub fn read_n16(&mut self) -> Result<u16> {
+    fn read_n16(&mut self) -> Result<u16> {
         Ok(u16::from_le_bytes([
             self.read_and_increment_pc()?,
             self.read_and_increment_pc()?,
@@ -363,15 +412,15 @@ impl GameBoy {
         return self.get_flag(0);
     }
 
-    pub fn get_n(&self) -> bool {
+    fn get_n(&self) -> bool {
         return self.get_flag(1);
     }
 
-    pub fn get_h(&self) -> bool {
+    fn get_h(&self) -> bool {
         return self.get_flag(2);
     }
 
-    pub fn get_c(&self) -> bool {
+    fn get_c(&self) -> bool {
         return self.get_flag(3);
     }
 
@@ -380,19 +429,19 @@ impl GameBoy {
         return (self.f >> shifts) & 1 == 1;
     }
 
-    pub fn set_z(&mut self, set: bool) {
+    fn set_z(&mut self, set: bool) {
         self.set_flag(0, set)
     }
 
-    pub fn set_n(&mut self, set: bool) {
+    fn set_n(&mut self, set: bool) {
         self.set_flag(1, set)
     }
 
-    pub fn set_h(&mut self, set: bool) {
+    fn set_h(&mut self, set: bool) {
         self.set_flag(2, set)
     }
 
-    pub fn set_c(&mut self, set: bool) {
+    fn set_c(&mut self, set: bool) {
         self.set_flag(3, set)
     }
 
@@ -407,7 +456,7 @@ impl GameBoy {
         }
     }
 
-    pub fn read_cond(&self, cond: u8) -> anyhow::Result<bool> {
+    fn read_cond(&self, cond: u8) -> anyhow::Result<bool> {
         match cond {
             0 => Ok(!self.get_z()),
             1 => Ok(self.get_z()),
@@ -422,7 +471,7 @@ impl GameBoy {
         self.write_8(self.sp, val)
     }
 
-    pub fn push_16(&mut self, val: u16) -> Result<()> {
+    fn push_16(&mut self, val: u16) -> Result<()> {
         let bytes = val.to_be_bytes();
         self.push_8(bytes[0])?;
         self.push_8(bytes[1])
@@ -434,7 +483,7 @@ impl GameBoy {
         Ok(res)
     }
 
-    pub fn pop_16(&mut self) -> Result<u16> {
+    fn pop_16(&mut self) -> Result<u16> {
         Ok(u16::from_le_bytes([self.pop_8()?, self.pop_8()?]))
     }
 }

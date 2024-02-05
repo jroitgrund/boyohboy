@@ -1,19 +1,14 @@
-mod cartridge;
-mod external_ram;
 mod gb;
-mod high_ram;
-mod instructions;
-mod interrupt_enable_register;
-mod io_registers;
-mod mirror_ram;
-mod not_usable;
-mod object_attribute_memory;
 mod test;
-mod video_ram;
-mod work_ram;
+
+use crate::gb::GameBoy;
 
 use anyhow::Result;
+use std::path::Path;
 
 fn main() -> Result<()> {
-    Ok(())
+    let mut gb = GameBoy::new(Path::new(""))?;
+    loop {
+        gb.step()?;
+    }
 }

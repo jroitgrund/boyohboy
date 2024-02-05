@@ -1,9 +1,8 @@
 use crate::gb::GameBoy;
-use crate::instructions::execute_next_instruction;
 use anyhow::Result;
-use std::fs;
 use std::fs::File;
-use std::io::{BufRead, BufReader, BufWriter, Write};
+use std::io::BufWriter;
+use std::io::Write;
 use std::path::Path;
 
 #[cfg(test)]
@@ -68,68 +67,20 @@ mod tests {
 }
 
 fn run_rom(path: &Path, num: usize) -> Result<()> {
-    let serial_log_path = format!("logs/serial-{:02?}.txt", num);
-
     {
         let mut gb = GameBoy::new(path)?;
-        let expected_log_lines =
-            BufReader::new(File::open(format!("logs/expected-{:02?}.txt", num))?)
-                .lines()
-                .count();
         let mut log = BufWriter::new(File::create(format!("logs/{:02?}.txt", num))?);
+        let mut serial = String::new();
 
-        let mut serial = BufWriter::new(File::create(&serial_log_path)?);
-
-        let mut lines = 0;
-        while !gb.halted && lines < expected_log_lines {
-            log.write_all(gb.log()?.as_bytes())?;
-            if let Some(serial_log) = gb.serial()? {
-                serial.write_all(serial_log.as_bytes())?;
+        while !serial.contains("Passed") {
+            let (maybe_serial_log, gb_log) = gb.step()?;
+            log.write_all(gb_log.as_bytes())?;
+            if let Some(serial_log) = maybe_serial_log {
+                print!("{}", serial_log);
+                serial.push_str(&serial_log);
             }
-            execute_next_instruction(&mut gb)?;
-            lines += 1
         }
     }
 
-    let string = fs::read_to_string(serial_log_path)?;
-    assert!(string.contains("Passed"));
-
     Ok(())
 }
-
-// fn run_asm(asm: &Path) -> Result<()> {
-//     let tmp_dir = TempDir::new("")?;
-//     let object = tmp_dir.path().join("object.o");
-//     let rom = tmp_dir.path().join("rom.gb");
-//
-//     assert!(Command::new("rgbasm")
-//         .arg("-L")
-//         .arg("-o")
-//         .arg(object.to_str().unwrap())
-//         .arg(asm.to_str().unwrap())
-//         .output()
-//         .unwrap()
-//         .status
-//         .success());
-//
-//     assert!(Command::new("rgblink")
-//         .arg("-o")
-//         .arg(rom.to_str().unwrap())
-//         .arg(object.to_str().unwrap())
-//         .output()
-//         .unwrap()
-//         .status
-//         .success());
-//
-//     assert!(Command::new("rgbfix")
-//         .arg("-v")
-//         .arg("-p")
-//         .arg("0xFF")
-//         .arg(rom.to_str().unwrap())
-//         .output()
-//         .unwrap()
-//         .status
-//         .success());
-//
-//     run_rom(&rom)
-// }
