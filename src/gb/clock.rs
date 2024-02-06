@@ -1,6 +1,6 @@
 use crate::gb::bits::get_bits;
 use crate::gb::interrupts::Interrupts::Timer;
-use crate::gb::GameBoyImpl;
+use crate::gb::{GameBoyImpl, Pixel};
 use anyhow::{anyhow, Result};
 
 const DIV_CYCLES: u8 = 64;
@@ -14,24 +14,29 @@ struct TimerInfo {
 }
 
 impl GameBoyImpl {
-    pub fn tick(&mut self, cycles: usize) -> Result<()> {
+    pub fn tick(&mut self, cycles: usize) -> Result<Vec<Pixel>> {
         let timer_info = self.get_timer_info()?;
 
-        for _i in 0..cycles {
-            self.cycles = self.cycles.wrapping_add(1);
+        let pixels: Result<Vec<Vec<Pixel>>> = (0..cycles)
+            .map(|_| {
+                let pixels = self.tick_gpu()?;
+                self.cycles = self.cycles.wrapping_add(1);
 
-            if self.cycles % usize::from(DIV_CYCLES) == 0 {
-                self.io_registers.tick_div()?;
-            }
-
-            if timer_info.enable && self.cycles % usize::from(timer_info.cycles) == 0 {
-                if self.io_registers.tick_timer(timer_info.modulo)? {
-                    self.trigger_interrupt(Timer)?;
+                if self.cycles % usize::from(DIV_CYCLES) == 0 {
+                    self.io_registers.tick_div()?;
                 }
-            }
-        }
 
-        Ok(())
+                if timer_info.enable && self.cycles % usize::from(timer_info.cycles) == 0 {
+                    if self.io_registers.tick_timer(timer_info.modulo)? {
+                        self.trigger_interrupt(Timer)?;
+                    }
+                }
+
+                Ok(pixels)
+            })
+            .collect();
+
+        Ok(pixels?.into_iter().flatten().collect())
     }
 
     fn get_timer_info(&mut self) -> Result<TimerInfo> {

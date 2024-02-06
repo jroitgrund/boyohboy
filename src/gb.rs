@@ -4,6 +4,7 @@ use anyhow::Result;
 
 use crate::gb::cartridge::Cartridge;
 use crate::gb::external_ram::ExternalRam;
+use crate::gb::gpu::Gpu;
 use crate::gb::high_ram::HighRam;
 use crate::gb::instructions::InstructionResult;
 use crate::gb::interrupt_enable_register::InterruptEnableRegister;
@@ -21,6 +22,7 @@ mod bits;
 mod cartridge;
 mod clock;
 mod external_ram;
+mod gpu;
 mod high_ram;
 mod instructions;
 mod interrupt_enable_register;
@@ -33,6 +35,21 @@ mod ram;
 mod video_ram;
 
 const R16_HL: u8 = 2;
+
+#[derive(Debug, PartialEq)]
+pub enum Color {
+    White,
+    LightGray,
+    DarkGray,
+    Black,
+}
+
+#[derive(Debug)]
+pub struct Pixel {
+    pub x: u8,
+    pub y: u8,
+    pub color: Color,
+}
 
 enum AccessType {
     Direct,
@@ -61,7 +78,7 @@ impl GameBoy {
         })
     }
 
-    pub fn step(&mut self) -> Result<(Option<String>, String)> {
+    pub fn step(&mut self) -> Result<(Option<String>, String, Vec<Pixel>)> {
         self.gb.step()
     }
 }
@@ -80,6 +97,7 @@ pub struct GameBoyImpl {
     l: u8,
     sp: u16,
     pc: u16,
+    gpu: Gpu,
     cartridge: Cartridge,
     video_ram: VideoRam,
     external_ram: ExternalRam,
@@ -104,7 +122,7 @@ enum Halt {
 }
 
 impl GameBoyImpl {
-    fn step(&mut self) -> Result<(Option<String>, String)> {
+    fn step(&mut self) -> Result<(Option<String>, String, Vec<Pixel>)> {
         let instruction_result = match self.halt {
             Running | HaltBug => {
                 let instruction_result = if self.halt == Running {
@@ -120,10 +138,15 @@ impl GameBoyImpl {
                 cycles: 1,
             },
         };
-        self.tick(usize::from(instruction_result.cycles))?;
+        let instruction_pixels = self.tick(usize::from(instruction_result.cycles))?;
 
         let interrupt_result = self.handle_interrupts()?;
-        self.tick(usize::from(interrupt_result.cycles))?;
+        let interrupt_pixels = self.tick(usize::from(interrupt_result.cycles))?;
+
+        let pixels = vec![instruction_pixels, interrupt_pixels]
+            .into_iter()
+            .flatten()
+            .collect();
 
         self.halt = match (
             interrupt_result.interrupt_requested,
@@ -140,7 +163,7 @@ impl GameBoyImpl {
             },
         };
 
-        Ok((self.serial()?, self.log()?))
+        Ok((self.serial()?, self.log()?, pixels))
     }
 
     pub fn new(cartridge: &Path) -> Result<GameBoyImpl> {
@@ -158,6 +181,7 @@ impl GameBoyImpl {
             l: 0x4D,
             sp: 0xFFFE,
             pc: 0x0100,
+            gpu: Gpu::new(),
             cartridge: Cartridge::new(cartridge)?,
             video_ram: VideoRam::new(),
             external_ram: ExternalRam::new(),

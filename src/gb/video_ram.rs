@@ -2,6 +2,7 @@ use crate::gb::MemoryMappedDevice;
 
 const SIZE: usize = 0xA000 - 0x8000;
 
+#[derive(Debug)]
 pub struct VideoRam {
     ram: [u8; SIZE],
 }

@@ -7,7 +7,9 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1.0.79"
+itertools = "0.12.1"
 log = "0.4.20"
 log4rs = "1.2.0"
 memmap = "0.7.0"
+sdl2 = "0.36.0"
 tempdir = "0.3.7"

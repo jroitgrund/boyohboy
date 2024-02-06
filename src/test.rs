@@ -1,13 +1,9 @@
-use crate::gb::GameBoy;
-use anyhow::Result;
-use std::fs::File;
-use std::io::BufWriter;
-use std::io::Write;
-use std::path::Path;
-
 #[cfg(test)]
 mod tests {
-    use crate::test::run_rom;
+    use crate::gb::GameBoy;
+    use std::fs::File;
+    use std::io::BufWriter;
+    use std::io::Write;
     use std::path::Path;
 
     #[test]
@@ -64,23 +60,23 @@ mod tests {
     fn test_blarrg_11() -> anyhow::Result<()> {
         run_rom(Path::new("roms/11-op a,(hl).gb"), 11)
     }
-}
 
-fn run_rom(path: &Path, num: usize) -> Result<()> {
-    {
-        let mut gb = GameBoy::new(path)?;
-        let mut log = BufWriter::new(File::create(format!("logs/{:02?}.txt", num))?);
-        let mut serial = String::new();
+    fn run_rom(path: &Path, num: usize) -> anyhow::Result<()> {
+        {
+            let mut gb = GameBoy::new(path)?;
+            let mut log = BufWriter::new(File::create(format!("logs/{:02?}.txt", num))?);
+            let mut serial = String::new();
 
-        while !serial.contains("Passed") {
-            let (maybe_serial_log, gb_log) = gb.step()?;
-            log.write_all(gb_log.as_bytes())?;
-            if let Some(serial_log) = maybe_serial_log {
-                print!("{}", serial_log);
-                serial.push_str(&serial_log);
+            while !serial.contains("Passed") {
+                let (maybe_serial_log, gb_log, _) = gb.step()?;
+                log.write_all(gb_log.as_bytes())?;
+                if let Some(serial_log) = maybe_serial_log {
+                    print!("{}", serial_log);
+                    serial.push_str(&serial_log);
+                }
             }
         }
-    }
 
-    Ok(())
+        Ok(())
+    }
 }
