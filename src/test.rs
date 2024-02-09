@@ -64,12 +64,12 @@ mod tests {
     fn run_rom(path: &Path, num: usize) -> anyhow::Result<()> {
         {
             let mut gb = GameBoy::new(path)?;
-            let mut log = BufWriter::new(File::create(format!("logs/{:02?}.txt", num))?);
+            // let mut log = BufWriter::new(File::create(format!("logs/{:02?}.txt", num))?);
             let mut serial = String::new();
 
             while !serial.contains("Passed") {
-                let (maybe_serial_log, gb_log, _) = gb.step()?;
-                log.write_all(gb_log.as_bytes())?;
+                let (maybe_serial_log, _) = gb.step()?;
+                // log.write_all(gb_log.as_bytes())?;
                 if let Some(serial_log) = maybe_serial_log {
                     print!("{}", serial_log);
                     serial.push_str(&serial_log);

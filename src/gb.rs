@@ -78,7 +78,7 @@ impl GameBoy {
         })
     }
 
-    pub fn step(&mut self) -> Result<(Option<String>, String, Vec<Pixel>)> {
+    pub fn step(&mut self) -> Result<(Option<String>, Vec<Pixel>)> {
         self.gb.step()
     }
 }
@@ -122,7 +122,7 @@ enum Halt {
 }
 
 impl GameBoyImpl {
-    fn step(&mut self) -> Result<(Option<String>, String, Vec<Pixel>)> {
+    fn step(&mut self) -> Result<(Option<String>, Vec<Pixel>)> {
         let instruction_result = match self.halt {
             Running | HaltBug => {
                 let instruction_result = if self.halt == Running {
@@ -138,15 +138,14 @@ impl GameBoyImpl {
                 cycles: 1,
             },
         };
-        let instruction_pixels = self.tick(usize::from(instruction_result.cycles))?;
+        let mut pixels = Vec::with_capacity(usize::from(instruction_result.cycles) * 4 + 5 * 4);
+        let mut instruction_pixels = self.tick(usize::from(instruction_result.cycles))?;
 
         let interrupt_result = self.handle_interrupts()?;
-        let interrupt_pixels = self.tick(usize::from(interrupt_result.cycles))?;
+        let mut interrupt_pixels = self.tick(usize::from(interrupt_result.cycles))?;
 
-        let pixels = vec![instruction_pixels, interrupt_pixels]
-            .into_iter()
-            .flatten()
-            .collect();
+        pixels.append(&mut instruction_pixels);
+        pixels.append(&mut interrupt_pixels);
 
         self.halt = match (
             interrupt_result.interrupt_requested,
@@ -163,7 +162,7 @@ impl GameBoyImpl {
             },
         };
 
-        Ok((self.serial()?, self.log()?, pixels))
+        Ok((self.serial()?, pixels))
     }
 
     pub fn new(cartridge: &Path) -> Result<GameBoyImpl> {

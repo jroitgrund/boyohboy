@@ -167,8 +167,10 @@ impl GameBoyImpl {
             self.gpu = Stopped;
         }
 
-        let pixels: Result<Vec<Option<Pixel>>> = (0..4).map(|_| self.tick_dot(&lcd_info)).collect();
-        Ok(pixels?.into_iter().filter_map(|f| f).collect())
+        Ok((0..4)
+            .map(|_| self.tick_dot(&lcd_info))
+            .filter_map_ok(|f| f)
+            .collect::<Result<Vec<Pixel>>>()?)
     }
 
     fn tick_dot(&mut self, lcd_info: &LCDInfo) -> Result<Option<Pixel>> {

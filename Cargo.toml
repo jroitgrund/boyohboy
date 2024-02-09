@@ -13,3 +13,6 @@ log4rs = "1.2.0"
 memmap = "0.7.0"
 sdl2 = "0.36.0"
 tempdir = "0.3.7"
+
+[profile.release]
+debug = 1

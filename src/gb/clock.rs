@@ -17,26 +17,24 @@ impl GameBoyImpl {
     pub fn tick(&mut self, cycles: usize) -> Result<Vec<Pixel>> {
         let timer_info = self.get_timer_info()?;
 
-        let pixels: Result<Vec<Vec<Pixel>>> = (0..cycles)
-            .map(|_| {
-                let pixels = self.tick_gpu()?;
-                self.cycles = self.cycles.wrapping_add(1);
+        let mut pixels: Vec<Pixel> = Vec::with_capacity(4 * cycles);
 
-                if self.cycles % usize::from(DIV_CYCLES) == 0 {
-                    self.io_registers.tick_div()?;
+        for _ in 0..cycles {
+            pixels.append(&mut self.tick_gpu()?);
+            self.cycles = self.cycles.wrapping_add(1);
+
+            if self.cycles % usize::from(DIV_CYCLES) == 0 {
+                self.io_registers.tick_div()?;
+            }
+
+            if timer_info.enable && self.cycles % usize::from(timer_info.cycles) == 0 {
+                if self.io_registers.tick_timer(timer_info.modulo)? {
+                    self.trigger_interrupt(Timer)?;
                 }
+            }
+        }
 
-                if timer_info.enable && self.cycles % usize::from(timer_info.cycles) == 0 {
-                    if self.io_registers.tick_timer(timer_info.modulo)? {
-                        self.trigger_interrupt(Timer)?;
-                    }
-                }
-
-                Ok(pixels)
-            })
-            .collect();
-
-        Ok(pixels?.into_iter().flatten().collect())
+        Ok(pixels)
     }
 
     fn get_timer_info(&mut self) -> Result<TimerInfo> {
