@@ -1,11 +1,14 @@
-use crate::gb::bits::get_bits;
-use crate::gb::interrupts::Interrupts::Timer;
+use crate::gb::bits::{get_bit, get_bits};
+use crate::gb::gpu::{Gpu, LY_REGISTER};
+use crate::gb::interrupts::Interrupts::{Timer, VBlank, LCD};
 use crate::gb::{GameBoyImpl, Pixel};
 use anyhow::{anyhow, Result};
 
 const DIV_CYCLES: u8 = 64;
 const TIMER_MODULO: u16 = 0xFF06;
 const TIMER_CONTROL: u16 = 0xFF07;
+const LCD_STATUS: u16 = 0xFF41;
+const LY_COMPARE: u16 = 0xFF45;
 
 struct TimerInfo {
     cycles: usize,
@@ -13,8 +16,24 @@ struct TimerInfo {
     enable: bool,
 }
 
+struct LcdStatus {
+    lyc_interrupt: bool,
+    mode_2_interrupt: bool,
+    mode_1_interrupt: bool,
+    mode_0_interrupt: bool,
+    status: u8,
+}
+
 impl GameBoyImpl {
     pub fn tick(&mut self, cycles: usize) -> Result<Vec<Pixel>> {
+        let old_mode: u8 = match &self.gpu {
+            Gpu::Stopped => 2,
+            Gpu::Mode2 { .. } => 2,
+            Gpu::Mode3 { .. } => 3,
+            Gpu::Mode0 { .. } => 0,
+            Gpu::Mode1 { .. } => 1,
+        };
+        let old_lcd_status = self.get_lcd_status()?;
         let timer_info = self.get_timer_info()?;
 
         let mut pixels: Vec<Pixel> = Vec::with_capacity(4 * cycles);
@@ -32,6 +51,35 @@ impl GameBoyImpl {
                     self.trigger_interrupt(Timer)?;
                 }
             }
+        }
+
+        let lcd_status = self.get_lcd_status()?;
+
+        let lyc_compare = self.read_8(LY_REGISTER)? == self.read_8(LY_COMPARE)?;
+        let mode: u8 = match &self.gpu {
+            Gpu::Stopped => 2,
+            Gpu::Mode2 { .. } => 2,
+            Gpu::Mode3 { .. } => 3,
+            Gpu::Mode0 { .. } => 0,
+            Gpu::Mode1 { .. } => 1,
+        };
+
+        self.write_8(
+            LCD_STATUS,
+            (lcd_status.status & !7) | (if lyc_compare { 1 } else { 0 } << 2) | mode,
+        )?;
+
+        if mode != old_mode
+            && (mode == 0 && lcd_status.mode_0_interrupt
+                || mode == 1 && lcd_status.mode_1_interrupt
+                || mode == 2 && lcd_status.mode_2_interrupt
+                || lyc_compare && lcd_status.lyc_interrupt)
+        {
+            self.trigger_interrupt(LCD)?;
+        }
+
+        if mode != old_mode && mode == 1 {
+            self.trigger_interrupt(VBlank)?;
         }
 
         Ok(pixels)
@@ -54,5 +102,20 @@ impl GameBoyImpl {
             cycles,
             modulo,
         });
+    }
+
+    fn get_lcd_status(&mut self) -> Result<LcdStatus> {
+        let status = self.read_8(LCD_STATUS)?;
+        let lyc_interrupt = get_bit(status, 6) == 1;
+        let mode_2_interrupt = get_bit(status, 5) == 1;
+        let mode_1_interrupt = get_bit(status, 4) == 1;
+        let mode_0_interrupt = get_bit(status, 3) == 1;
+        Ok(LcdStatus {
+            status,
+            lyc_interrupt,
+            mode_0_interrupt,
+            mode_1_interrupt,
+            mode_2_interrupt,
+        })
     }
 }

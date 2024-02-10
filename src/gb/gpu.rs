@@ -4,6 +4,7 @@ use crate::gb::Color::{Black, DarkGray, LightGray, White};
 use crate::gb::{Color, GameBoyImpl, Pixel};
 use anyhow::{anyhow, Result};
 use itertools::Itertools;
+use log::info;
 use std::mem;
 use Gpu::{Mode1, Mode3};
 
@@ -41,7 +42,7 @@ impl Gpu {
 }
 
 const OBJ_TILES_BASE: u16 = 0x8000;
-const OBJ_ATTRIBUTES_BASE: u16 = 0xFE00;
+pub const OBJ_ATTRIBUTES_BASE: u16 = 0xFE00;
 const OBJ_ATTRIBUTES_SIZE: u16 = 4;
 const LCD_CONTROL: u16 = 0xFF40;
 const BG_SCY: u16 = 0xFF42;
@@ -51,6 +52,7 @@ const WINDOW_SCX: u16 = 0xFF4B;
 const BG_PALETTE: u16 = 0xFF47;
 const OBJ_PALETTE_0: u16 = 0xFF48;
 const OBJ_PALETTE_1: u16 = 0xFF49;
+pub const LY_REGISTER: u16 = 0xFF44;
 
 const LINE_BYTES: u8 = 2;
 const TILE_BYTES: u16 = 16;
@@ -218,11 +220,11 @@ impl GameBoyImpl {
             } => {
                 let scanline = *scanline;
                 let dots_left = *dots_left;
-                self.tick_mode0(scanline, dots_left)
+                self.tick_mode0(scanline, dots_left)?
             }
             Mode1 { dots_left } => {
                 let dots_left = *dots_left;
-                self.tick_mode1(dots_left)
+                self.tick_mode1(dots_left)?
             }
         };
 
@@ -367,12 +369,13 @@ impl GameBoyImpl {
         })
     }
 
-    fn tick_mode0(&self, scanline: i32, dots_left: i32) -> (Gpu, Option<Pixel>) {
+    fn tick_mode0(&mut self, scanline: i32, dots_left: i32) -> Result<(Gpu, Option<Pixel>)> {
         let dots_left = dots_left - 1;
 
-        (
+        Ok((
             if dots_left == 0 {
                 let scanline = scanline + 1;
+                self.write_8(LY_REGISTER, scanline as u8)?;
                 if scanline == SCANLINES {
                     Mode1 {
                         dots_left: MODE_1_DOTS,
@@ -390,14 +393,17 @@ impl GameBoyImpl {
                 }
             },
             None,
-        )
+        ))
     }
 
-    fn tick_mode1(&self, dots_left: i32) -> (Gpu, Option<Pixel>) {
+    fn tick_mode1(&mut self, dots_left: i32) -> Result<(Gpu, Option<Pixel>)> {
         let dots_left = dots_left - 1;
+        let scanline = (((4560 - dots_left) / 456) as u8) + 144;
+        self.write_8(LY_REGISTER, scanline)?;
 
-        (
+        Ok((
             if dots_left == 0 {
+                self.write_8(LY_REGISTER, 0)?;
                 Mode2 {
                     scanline: 0,
                     dots_left: MODE2_DOTS,
@@ -406,7 +412,7 @@ impl GameBoyImpl {
                 Mode1 { dots_left }
             },
             None,
-        )
+        ))
     }
 
     fn tick_stopped(&mut self, lcd_info: &LCDInfo) -> Gpu {

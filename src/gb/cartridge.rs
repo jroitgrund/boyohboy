@@ -22,6 +22,7 @@ impl MemoryMappedDevice for Cartridge {
     }
 
     fn write(&mut self, _addr: u16, _val: u8) -> Result<()> {
-        Err(anyhow!("Cannot write to cartridge"))
+        // Err(anyhow!("Cannot write to cartridge ({})", _addr))
+        Ok(())
     }
 }

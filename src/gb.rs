@@ -4,7 +4,7 @@ use anyhow::Result;
 
 use crate::gb::cartridge::Cartridge;
 use crate::gb::external_ram::ExternalRam;
-use crate::gb::gpu::Gpu;
+use crate::gb::gpu::{Gpu, OBJ_ATTRIBUTES_BASE};
 use crate::gb::high_ram::HighRam;
 use crate::gb::instructions::InstructionResult;
 use crate::gb::interrupt_enable_register::InterruptEnableRegister;
@@ -14,6 +14,7 @@ use crate::gb::object_attribute_memory::ObjectAttributeMemory;
 use crate::gb::ram::Ram;
 use crate::gb::video_ram::VideoRam;
 use crate::gb::Halt::Running;
+use log::info;
 use std::ops;
 use std::path::Path;
 use Halt::{HaltBug, Halted};
@@ -33,6 +34,8 @@ mod not_usable;
 mod object_attribute_memory;
 mod ram;
 mod video_ram;
+
+const DMA_REGISTER: u16 = 0xFF46;
 
 const R16_HL: u8 = 2;
 
@@ -161,7 +164,6 @@ impl GameBoyImpl {
                 Running => Running,
             },
         };
-
         Ok((self.serial()?, pixels))
     }
 
@@ -227,7 +229,7 @@ impl GameBoyImpl {
         gb.write_8(0xFF43, 0x00)?;
         gb.write_8(0xFF44, 0x90)?;
         gb.write_8(0xFF45, 0x00)?;
-        gb.write_8(0xFF46, 0xFF)?;
+        // gb.write_8(0xFF46, 0xFF)?;
         gb.write_8(0xFF47, 0xFC)?;
         gb.write_8(0xFF48, 0xFF)?;
         gb.write_8(0xFF49, 0xFF)?;
@@ -267,18 +269,23 @@ impl GameBoyImpl {
 
     fn read_8(&mut self, addr: u16) -> Result<u8> {
         let (device, offset) = self.get_device_and_offset(addr)?;
-        if addr == 0xFF44 {
-            println!();
-        }
         device.read(offset)
     }
 
     fn write_8(&mut self, addr: u16, val: u8) -> Result<()> {
-        let (device, offset) = self.get_device_and_offset(addr)?;
-        if addr == 0xFF44 {
-            println!();
+        match addr {
+            DMA_REGISTER => {
+                for offset in 0..0xFF {
+                    let byte = self.read_8((u16::from(val) << 2) + offset)?;
+                    self.write_8(OBJ_ATTRIBUTES_BASE + offset, byte)?;
+                }
+                Ok(())
+            }
+            _ => {
+                let (device, offset) = self.get_device_and_offset(addr)?;
+                device.write(offset, val)
+            }
         }
-        device.write(offset, val)
     }
 
     fn write_16(&mut self, addr: u16, val: u16) -> Result<()> {

@@ -9,6 +9,7 @@ impl MemoryMappedDevice for NotUsable {
     }
 
     fn write(&mut self, addr: u16, _val: u8) -> anyhow::Result<()> {
-        Err(anyhow!("Write to unusuable address {}", addr))
+        // Err(anyhow!("Write to unusuable address {}", addr))
+        Ok(())
     }
 }
