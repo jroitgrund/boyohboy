@@ -2,40 +2,24 @@ use crate::gb::AccessType::{Direct, Indirect};
 use anyhow::anyhow;
 use anyhow::Result;
 
-use crate::gb::cartridge::Cartridge;
-use crate::gb::external_ram::ExternalRam;
-use crate::gb::gpu::{Gpu, OBJ_ATTRIBUTES_BASE};
-use crate::gb::high_ram::HighRam;
+use crate::gb::gpu::Gpu;
+
 use crate::gb::instructions::InstructionResult;
-use crate::gb::interrupt_enable_register::InterruptEnableRegister;
-use crate::gb::io_registers::IORegisters;
-use crate::gb::not_usable::NotUsable;
-use crate::gb::object_attribute_memory::ObjectAttributeMemory;
-use crate::gb::ram::Ram;
-use crate::gb::video_ram::VideoRam;
+
+use crate::gb::memory::Memory;
+
 use crate::gb::Halt::Running;
-use log::info;
 use std::ops;
 use std::path::Path;
 use Halt::{HaltBug, Halted};
 
 mod bits;
-mod cartridge;
 mod clock;
-mod external_ram;
 mod gpu;
-mod high_ram;
 mod instructions;
-mod interrupt_enable_register;
 mod interrupts;
 mod introspection;
-mod io_registers;
-mod not_usable;
-mod object_attribute_memory;
-mod ram;
-mod video_ram;
-
-const DMA_REGISTER: u16 = 0xFF46;
+mod memory;
 
 const R16_HL: u8 = 2;
 
@@ -86,7 +70,7 @@ impl GameBoy {
     }
 }
 
-pub struct GameBoyImpl {
+struct GameBoyImpl {
     halt: Halt,
     cycles: usize,
     ime: bool,
@@ -101,20 +85,7 @@ pub struct GameBoyImpl {
     sp: u16,
     pc: u16,
     gpu: Gpu,
-    cartridge: Cartridge,
-    video_ram: VideoRam,
-    external_ram: ExternalRam,
-    ram: Ram,
-    object_attribute_memory: ObjectAttributeMemory,
-    not_usable: NotUsable,
-    io_registers: IORegisters,
-    high_ram: HighRam,
-    interrupt_enable_register: InterruptEnableRegister,
-}
-
-trait MemoryMappedDevice {
-    fn read(&self, addr: u16) -> Result<u8>;
-    fn write(&mut self, addr: u16, val: u8) -> Result<()>;
+    memory: Memory,
 }
 
 #[derive(PartialEq)]
@@ -128,13 +99,11 @@ impl GameBoyImpl {
     fn step(&mut self) -> Result<(Option<String>, Vec<Pixel>)> {
         let instruction_result = match self.halt {
             Running | HaltBug => {
-                let instruction_result = if self.halt == Running {
+                if self.halt == Running {
                     self.execute_next_instruction()?
                 } else {
                     self.execute_next_instruction_with_halt_bug()?
-                };
-
-                instruction_result
+                }
             }
             Halted => InstructionResult {
                 is_halt: false,
@@ -183,15 +152,7 @@ impl GameBoyImpl {
             sp: 0xFFFE,
             pc: 0x0100,
             gpu: Gpu::new(),
-            cartridge: Cartridge::new(cartridge)?,
-            video_ram: VideoRam::new(),
-            external_ram: ExternalRam::new(),
-            ram: Ram::new(),
-            object_attribute_memory: ObjectAttributeMemory::new(),
-            not_usable: NotUsable {},
-            io_registers: IORegisters::new(),
-            high_ram: HighRam::new(),
-            interrupt_enable_register: InterruptEnableRegister::new(),
+            memory: Memory::new(cartridge)?,
         };
 
         gb.write_8(0xFF00, 0xCF)?;
@@ -252,40 +213,12 @@ impl GameBoyImpl {
         Ok(gb)
     }
 
-    fn get_device_and_offset(&mut self, addr: u16) -> Result<(&mut dyn MemoryMappedDevice, u16)> {
-        match addr {
-            0x0000..=0x7FFF => Ok((&mut self.cartridge, addr)),
-            0x8000..=0x9FFF => Ok((&mut self.video_ram, addr - 0x8000)),
-            0xA000..=0xBFFF => Ok((&mut self.external_ram, addr - 0xA000)),
-            0xC000..=0xDFFF => Ok((self.ram.work_ram(), addr - 0xC000)),
-            0xE000..=0xFDFF => Ok((self.ram.mirror_ram(), addr - 0xE000)),
-            0xFE00..=0xFE9F => Ok((&mut self.object_attribute_memory, addr - 0xFE00)),
-            0xFEA0..=0xFEFF => Ok((&mut self.not_usable, addr - 0xFEA0)),
-            0xFF00..=0xFF7F => Ok((&mut self.io_registers, addr - 0xFF00)),
-            0xFF80..=0xFFFE => Ok((&mut self.high_ram, addr - 0xFF80)),
-            0xFFFF..=0xFFFF => Ok((&mut self.interrupt_enable_register, addr - 0xFFFF)),
-        }
-    }
-
     fn read_8(&mut self, addr: u16) -> Result<u8> {
-        let (device, offset) = self.get_device_and_offset(addr)?;
-        device.read(offset)
+        self.memory.read(addr)
     }
 
     fn write_8(&mut self, addr: u16, val: u8) -> Result<()> {
-        match addr {
-            DMA_REGISTER => {
-                for offset in 0..0xFF {
-                    let byte = self.read_8((u16::from(val) << 2) + offset)?;
-                    self.write_8(OBJ_ATTRIBUTES_BASE + offset, byte)?;
-                }
-                Ok(())
-            }
-            _ => {
-                let (device, offset) = self.get_device_and_offset(addr)?;
-                device.write(offset, val)
-            }
-        }
+        self.memory.write(addr, val)
     }
 
     fn write_16(&mut self, addr: u16, val: u16) -> Result<()> {
@@ -369,19 +302,25 @@ impl GameBoyImpl {
     fn write_r16(&mut self, r: u8, val: u16) -> Result<()> {
         let bytes = val.to_be_bytes();
         match r {
-            0 => Ok({
+            0 => {
                 self.b = bytes[0];
                 self.c = bytes[1];
-            }),
-            1 => Ok({
+                Ok(())
+            }
+            1 => {
                 self.d = bytes[0];
                 self.e = bytes[1];
-            }),
-            2 => Ok({
+                Ok(())
+            }
+            2 => {
                 self.h = bytes[0];
                 self.l = bytes[1];
-            }),
-            3 => Ok(self.sp = val),
+                Ok(())
+            }
+            3 => {
+                self.sp = val;
+                Ok(())
+            }
             _ => Err(anyhow!("Unknown register {}", r)),
         }
     }
@@ -409,7 +348,7 @@ impl GameBoyImpl {
 
     fn read_r16_stk(&self, r: u8) -> anyhow::Result<u16> {
         match r {
-            0 | 1 | 2 => self.read_r16(r),
+            0..=2 => self.read_r16(r),
             3 => Ok(u16::from_be_bytes([self.a, self.f])),
             _ => Err(anyhow!("Unknown register {}", r)),
         }
@@ -417,12 +356,13 @@ impl GameBoyImpl {
 
     fn write_r16_stk(&mut self, r: u8, val: u16) -> Result<()> {
         match r {
-            0 | 1 | 2 => self.write_r16(r, val),
-            3 => Ok({
+            0..=2 => self.write_r16(r, val),
+            3 => {
                 let bytes = val.to_be_bytes();
                 self.a = bytes[0];
                 self.f = bytes[1] & 0xF0;
-            }),
+                Ok(())
+            }
             _ => Err(anyhow!("Unknown register {}", r)),
         }
     }
@@ -439,24 +379,24 @@ impl GameBoyImpl {
     }
 
     fn get_z(&self) -> bool {
-        return self.get_flag(0);
+        self.get_flag(0)
     }
 
     fn get_n(&self) -> bool {
-        return self.get_flag(1);
+        self.get_flag(1)
     }
 
     fn get_h(&self) -> bool {
-        return self.get_flag(2);
+        self.get_flag(2)
     }
 
     fn get_c(&self) -> bool {
-        return self.get_flag(3);
+        self.get_flag(3)
     }
 
     fn get_flag(&self, flag_i: u8) -> bool {
         let shifts = 7 - flag_i;
-        return (self.f >> shifts) & 1 == 1;
+        (self.f >> shifts) & 1 == 1
     }
 
     fn set_z(&mut self, set: bool) {

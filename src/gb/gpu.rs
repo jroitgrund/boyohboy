@@ -4,7 +4,6 @@ use crate::gb::Color::{Black, DarkGray, LightGray, White};
 use crate::gb::{Color, GameBoyImpl, Pixel};
 use anyhow::{anyhow, Result};
 use itertools::Itertools;
-use log::info;
 use std::mem;
 use Gpu::{Mode1, Mode3};
 

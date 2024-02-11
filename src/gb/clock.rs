@@ -33,7 +33,6 @@ impl GameBoyImpl {
             Gpu::Mode0 { .. } => 0,
             Gpu::Mode1 { .. } => 1,
         };
-        let old_lcd_status = self.get_lcd_status()?;
         let timer_info = self.get_timer_info()?;
 
         let mut pixels: Vec<Pixel> = Vec::with_capacity(4 * cycles);
@@ -43,13 +42,14 @@ impl GameBoyImpl {
             self.cycles = self.cycles.wrapping_add(1);
 
             if self.cycles % usize::from(DIV_CYCLES) == 0 {
-                self.io_registers.tick_div()?;
+                self.memory.io_registers.tick_div()?;
             }
 
-            if timer_info.enable && self.cycles % usize::from(timer_info.cycles) == 0 {
-                if self.io_registers.tick_timer(timer_info.modulo)? {
-                    self.trigger_interrupt(Timer)?;
-                }
+            if timer_info.enable
+                && self.cycles % usize::from(timer_info.cycles) == 0
+                && self.memory.io_registers.tick_timer(timer_info.modulo)?
+            {
+                self.trigger_interrupt(Timer)?;
             }
         }
 
@@ -97,11 +97,11 @@ impl GameBoyImpl {
         }?;
         let modulo = self.read_8(TIMER_MODULO)?;
 
-        return Ok(TimerInfo {
+        Ok(TimerInfo {
             enable,
             cycles,
             modulo,
-        });
+        })
     }
 
     fn get_lcd_status(&mut self) -> Result<LcdStatus> {

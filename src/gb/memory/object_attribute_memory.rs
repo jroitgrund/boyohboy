@@ -1,4 +1,4 @@
-use crate::gb::MemoryMappedDevice;
+use crate::gb::memory::MemoryMappedDevice;
 
 const SIZE: usize = 0xFEA0 - 0xFE00;
 

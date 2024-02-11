@@ -1,4 +1,4 @@
-use crate::gb::MemoryMappedDevice;
+use crate::gb::memory::MemoryMappedDevice;
 
 const SIZE: usize = 0xFF80 - 0xFF00;
 const DIVIDER_REGISTER: u16 = 0xFF04 - 0xFF00;

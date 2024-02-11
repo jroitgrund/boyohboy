@@ -3,23 +3,23 @@ pub fn get_lsb(val: u8) -> u8 {
 }
 
 pub fn clear_bit(val: u8, bit: u8) -> u8 {
-    return val & !(1 << bit);
+    val & !(1 << bit)
 }
 
 pub fn set_bit(val: u8, bit: u8) -> u8 {
-    return val | (1 << bit);
+    val | (1 << bit)
 }
 
 pub fn get_bits(val: u8, high_bit: u8, low_bit: u8) -> u8 {
-    return (val >> low_bit) & ((1 << (1 + high_bit - low_bit)) - 1);
+    (val >> low_bit) & ((1 << (1 + high_bit - low_bit)) - 1)
 }
 
 pub fn get_bit(val: u8, bit: u8) -> u8 {
-    return get_bits(val, bit, bit);
+    get_bits(val, bit, bit)
 }
 
 pub fn test_bit(val: u8, bit: u8) -> bool {
-    return get_bits(val, bit, bit) == 1;
+    get_bits(val, bit, bit) == 1
 }
 
 #[cfg(test)]

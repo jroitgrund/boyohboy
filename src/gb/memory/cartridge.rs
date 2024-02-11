@@ -1,5 +1,6 @@
-use crate::gb::MemoryMappedDevice;
-use anyhow::{anyhow, Result};
+use crate::gb::memory::MemoryMappedDevice;
+use anyhow::Result;
+use log::warn;
 use memmap::{Mmap, MmapOptions};
 use std::fs::File;
 use std::path::Path;
@@ -12,7 +13,7 @@ impl Cartridge {
     pub fn new(cartridge: &Path) -> Result<Cartridge> {
         let file = File::open(cartridge)?;
         let mmap = unsafe { MmapOptions::new().map(&file)? };
-        return Ok(Cartridge { mmap });
+        Ok(Cartridge { mmap })
     }
 }
 
@@ -22,7 +23,7 @@ impl MemoryMappedDevice for Cartridge {
     }
 
     fn write(&mut self, _addr: u16, _val: u8) -> Result<()> {
-        // Err(anyhow!("Cannot write to cartridge ({})", _addr))
+        warn!("Cannot write to cartridge ({})", _addr);
         Ok(())
     }
 }

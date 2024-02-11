@@ -1,19 +1,18 @@
-use crate::gb::MemoryMappedDevice;
+use crate::gb::memory::MemoryMappedDevice;
 
-const SIZE: usize = 0xA000 - 0x8000;
+const SIZE: usize = 0xFFFF - 0xFF80;
 
-#[derive(Debug)]
-pub struct VideoRam {
+pub struct HighRam {
     ram: [u8; SIZE],
 }
 
-impl VideoRam {
-    pub fn new() -> VideoRam {
-        VideoRam { ram: [0u8; SIZE] }
+impl HighRam {
+    pub fn new() -> HighRam {
+        HighRam { ram: [0u8; SIZE] }
     }
 }
 
-impl MemoryMappedDevice for VideoRam {
+impl MemoryMappedDevice for HighRam {
     fn read(&self, addr: u16) -> anyhow::Result<u8> {
         Ok(self.ram[usize::from(addr)])
     }

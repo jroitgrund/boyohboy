@@ -1,4 +1,4 @@
-use crate::gb::MemoryMappedDevice;
+use crate::gb::memory::MemoryMappedDevice;
 use anyhow::anyhow;
 
 pub struct Ram {
@@ -17,7 +17,7 @@ impl Ram {
     }
 
     pub fn work_ram(&mut self) -> &mut dyn MemoryMappedDevice {
-        return &mut self.mirror_ram.work_ram;
+        &mut self.mirror_ram.work_ram
     }
 }
 

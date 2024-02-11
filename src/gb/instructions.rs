@@ -813,15 +813,15 @@ impl GameBoyImpl {
 }
 
 fn is_add_half_carry_16(a: u16, b: u16) -> bool {
-    return ((a & 0xFFF) + (b & 0xFFF)) & 0x1000 == 0x1000;
+    ((a & 0xFFF) + (b & 0xFFF)) & 0x1000 == 0x1000
 }
 
 fn is_add_half_carry_8(a: u8, b: u8) -> bool {
-    return ((a & 0xF) + (b & 0xF)) & 0x10 == 0x10;
+    ((a & 0xF) + (b & 0xF)) & 0x10 == 0x10
 }
 
 fn is_sub_half_carry_8(a: u8, b: u8) -> bool {
-    return ((a & 0xF).wrapping_sub(b & 0xF)) & 0x10 == 0x10;
+    ((a & 0xF).wrapping_sub(b & 0xF)) & 0x10 == 0x10
 }
 
 fn rotate_left(value: u8) -> (u8, bool) {
