@@ -24,6 +24,6 @@
 # Architecture
 
 - [ ] Unify `MemoryMappedDevice`
-- [ ] Extract functions in `tick_mode3`
-- [ ] Make more functions private in `gb.rs`
+- [x] Extract functions in `tick_mode3`
+- [x] Make more functions private in `gb.rs`
 - [ ] Make GPU buffer full frame with colors rather than sending back pixels

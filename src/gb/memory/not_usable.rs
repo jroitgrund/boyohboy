@@ -1,6 +1,6 @@
 use crate::gb::memory::MemoryMappedDevice;
 use anyhow::anyhow;
-use log::warn;
+use log::info;
 
 pub struct NotUsable {}
 
@@ -10,7 +10,7 @@ impl MemoryMappedDevice for NotUsable {
     }
 
     fn write(&mut self, addr: u16, _val: u8) -> anyhow::Result<()> {
-        warn!("Write to unusuable address {}", addr);
+        info!("Write to unusuable address {}", addr);
         Ok(())
     }
 }

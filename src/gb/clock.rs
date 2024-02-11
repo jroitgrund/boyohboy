@@ -1,109 +1,94 @@
-use crate::gb::bits::{get_bit, get_bits};
-use crate::gb::gpu::LY_REGISTER;
-use crate::gb::interrupts::Interrupts::{Timer, VBlank, LCD};
-use crate::gb::{GameBoyImpl, Pixel};
-use anyhow::{anyhow, Result};
+mod timer_info;
+
+use crate::gb::bits::set_bit;
+use crate::gb::clock::timer_info::TimerInfo;
+use crate::gb::cpu::Interrupts;
+use crate::gb::gpu::Gpu;
+use crate::gb::memory::map::{DIV, IF, TIMA};
+use crate::gb::memory::Memory;
+use crate::gb::Pixel;
+use anyhow::Result;
 
 const DIV_CYCLES: u8 = 64;
-const TIMER_MODULO: u16 = 0xFF06;
-const TIMER_CONTROL: u16 = 0xFF07;
-const LCD_STATUS: u16 = 0xFF41;
-const LY_COMPARE: u16 = 0xFF45;
 
-struct TimerInfo {
+pub struct Clock {
     cycles: usize,
-    modulo: u8,
-    enable: bool,
 }
 
-struct LcdStatus {
-    lyc_interrupt: bool,
-    mode_2_interrupt: bool,
-    mode_1_interrupt: bool,
-    mode_0_interrupt: bool,
-    status: u8,
-}
+impl Clock {
+    pub fn new() -> Clock {
+        Clock { cycles: 0 }
+    }
 
-impl GameBoyImpl {
-    pub fn tick(&mut self, cycles: usize) -> Result<Vec<Pixel>> {
-        let old_mode: u8 = self.gpu.mode();
-        let timer_info = self.get_timer_info()?;
+    pub fn tick(
+        &mut self,
+        gpu: &mut Gpu,
+        memory: &mut Memory,
+        cycles: usize,
+    ) -> Result<Vec<Pixel>> {
+        let timer_info = TimerInfo::from_memory(memory)?;
 
         let mut pixels: Vec<Pixel> = Vec::with_capacity(4 * cycles);
 
         for _ in 0..cycles {
-            pixels.append(&mut self.gpu.tick_gpu(&mut self.memory)?);
+            let (mut new_pixels, interrupts) = gpu.tick_gpu(memory)?;
+
+            pixels.append(&mut new_pixels);
+            for interrupt in interrupts {
+                trigger_interrupt(memory, interrupt)?;
+            }
+
             self.cycles = self.cycles.wrapping_add(1);
 
             if self.cycles % usize::from(DIV_CYCLES) == 0 {
-                self.memory.io_registers.tick_div()?;
+                tick_div(memory)?;
             }
 
             if timer_info.enable
-                && self.cycles % usize::from(timer_info.cycles) == 0
-                && self.memory.io_registers.tick_timer(timer_info.modulo)?
+                && self.cycles % timer_info.cycles == 0
+                && tick_timer(memory, timer_info.modulo)?
             {
-                self.trigger_interrupt(Timer)?;
+                trigger_interrupt(memory, Interrupts::Timer)?;
             }
-        }
-
-        let lcd_status = self.get_lcd_status()?;
-
-        let lyc_compare = self.read_8(LY_REGISTER)? == self.read_8(LY_COMPARE)?;
-        let mode: u8 = self.gpu.mode();
-
-        self.write_8(
-            LCD_STATUS,
-            (lcd_status.status & !7) | (if lyc_compare { 1 } else { 0 } << 2) | mode,
-        )?;
-
-        if mode != old_mode
-            && (mode == 0 && lcd_status.mode_0_interrupt
-                || mode == 1 && lcd_status.mode_1_interrupt
-                || mode == 2 && lcd_status.mode_2_interrupt
-                || lyc_compare && lcd_status.lyc_interrupt)
-        {
-            self.trigger_interrupt(LCD)?;
-        }
-
-        if mode != old_mode && mode == 1 {
-            self.trigger_interrupt(VBlank)?;
         }
 
         Ok(pixels)
     }
+}
 
-    fn get_timer_info(&mut self) -> Result<TimerInfo> {
-        let timer_control = self.read_8(TIMER_CONTROL)?;
-        let enable = get_bits(timer_control, 2, 2) == 1;
-        let cycles = match get_bits(timer_control, 1, 0) {
-            0b00 => Ok(64),
-            0b01 => Ok(4),
-            0b10 => Ok(16),
-            0b11 => Ok(64),
-            _ => Err(anyhow!("Unknown timer control value {}", timer_control)),
-        }?;
-        let modulo = self.read_8(TIMER_MODULO)?;
+pub fn tick_div(memory: &mut Memory) -> Result<()> {
+    let div = memory.read(DIV)?;
+    memory.write(DIV, div.wrapping_add(1))
+}
 
-        Ok(TimerInfo {
-            enable,
-            cycles,
-            modulo,
-        })
-    }
+pub fn tick_timer(memory: &mut Memory, modulo: u8) -> Result<bool> {
+    let incremented = memory.read(TIMA)?.wrapping_add(1);
+    Ok(match incremented {
+        0 => {
+            memory.write(TIMA, modulo)?;
+            true
+        }
+        _ => {
+            memory.write(TIMA, incremented)?;
+            false
+        }
+    })
+}
 
-    fn get_lcd_status(&mut self) -> Result<LcdStatus> {
-        let status = self.read_8(LCD_STATUS)?;
-        let lyc_interrupt = get_bit(status, 6) == 1;
-        let mode_2_interrupt = get_bit(status, 5) == 1;
-        let mode_1_interrupt = get_bit(status, 4) == 1;
-        let mode_0_interrupt = get_bit(status, 3) == 1;
-        Ok(LcdStatus {
-            status,
-            lyc_interrupt,
-            mode_0_interrupt,
-            mode_1_interrupt,
-            mode_2_interrupt,
-        })
-    }
+fn trigger_interrupt(memory: &mut Memory, interrupt: Interrupts) -> anyhow::Result<()> {
+    set_interrupt_bit(
+        memory,
+        match interrupt {
+            Interrupts::VBlank => 0,
+            Interrupts::Lcd => 1,
+            Interrupts::Timer => 2,
+            Interrupts::_Serial => 3,
+            Interrupts::_Joypad => 4,
+        },
+    )
+}
+
+fn set_interrupt_bit(memory: &mut Memory, bit: u8) -> anyhow::Result<()> {
+    let if_reg = memory.read(IF)?;
+    memory.write(IF, set_bit(if_reg, bit))
 }

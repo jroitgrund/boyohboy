@@ -1,38 +1,69 @@
 use crate::gb::memory::MemoryMappedDevice;
-
 const SIZE: usize = 0xFF80 - 0xFF00;
-const DIVIDER_REGISTER: u16 = 0xFF04 - 0xFF00;
-
-const TIMER_REGISTER: u16 = 0xFF05 - 0xFF00;
 
 pub struct IORegisters {
     ram: [u8; SIZE],
 }
 
 impl IORegisters {
+    #[allow(clippy::eq_op)]
     pub fn new() -> IORegisters {
-        IORegisters { ram: [0u8; SIZE] }
-    }
-
-    pub fn tick_div(&mut self) -> anyhow::Result<()> {
-        self.write(
-            DIVIDER_REGISTER,
-            self.read(DIVIDER_REGISTER)?.wrapping_add(1),
-        )
-    }
-
-    pub fn tick_timer(&mut self, modulo: u8) -> anyhow::Result<bool> {
-        let incremented = self.read(TIMER_REGISTER)?.wrapping_add(1);
-        Ok(match incremented {
-            0 => {
-                self.write(TIMER_REGISTER, modulo)?;
-                true
-            }
-            _ => {
-                self.write(TIMER_REGISTER, incremented)?;
-                false
-            }
-        })
+        let mut ram = [0u8; SIZE];
+        ram[0xFF00 - 0xFF00] = 0xCF;
+        ram[0xFF01 - 0xFF00] = 0x00;
+        ram[0xFF02 - 0xFF00] = 0x7E;
+        ram[0xFF04 - 0xFF00] = 0xAB;
+        ram[0xFF05 - 0xFF00] = 0x00;
+        ram[0xFF06 - 0xFF00] = 0x00;
+        ram[0xFF07 - 0xFF00] = 0xF8;
+        ram[0xFF0F - 0xFF00] = 0xE1;
+        ram[0xFF10 - 0xFF00] = 0x80;
+        ram[0xFF11 - 0xFF00] = 0xBF;
+        ram[0xFF12 - 0xFF00] = 0xF3;
+        ram[0xFF13 - 0xFF00] = 0xFF;
+        ram[0xFF14 - 0xFF00] = 0xBF;
+        ram[0xFF16 - 0xFF00] = 0x3F;
+        ram[0xFF17 - 0xFF00] = 0x00;
+        ram[0xFF18 - 0xFF00] = 0xFF;
+        ram[0xFF19 - 0xFF00] = 0xBF;
+        ram[0xFF1A - 0xFF00] = 0x7F;
+        ram[0xFF1B - 0xFF00] = 0xFF;
+        ram[0xFF1C - 0xFF00] = 0x9F;
+        ram[0xFF1D - 0xFF00] = 0xFF;
+        ram[0xFF1E - 0xFF00] = 0xBF;
+        ram[0xFF20 - 0xFF00] = 0xFF;
+        ram[0xFF21 - 0xFF00] = 0x00;
+        ram[0xFF22 - 0xFF00] = 0x00;
+        ram[0xFF23 - 0xFF00] = 0xBF;
+        ram[0xFF24 - 0xFF00] = 0x77;
+        ram[0xFF25 - 0xFF00] = 0xF3;
+        ram[0xFF26 - 0xFF00] = 0xF1;
+        ram[0xFF40 - 0xFF00] = 0x91;
+        ram[0xFF41 - 0xFF00] = 0x85;
+        ram[0xFF42 - 0xFF00] = 0x00;
+        ram[0xFF43 - 0xFF00] = 0x00;
+        ram[0xFF44 - 0xFF00] = 0x90;
+        ram[0xFF45 - 0xFF00] = 0x00;
+        ram[0xFF46 - 0xFF00] = 0xFF;
+        ram[0xFF47 - 0xFF00] = 0xFC;
+        ram[0xFF48 - 0xFF00] = 0xFF;
+        ram[0xFF49 - 0xFF00] = 0xFF;
+        ram[0xFF4A - 0xFF00] = 0x00;
+        ram[0xFF4B - 0xFF00] = 0x00;
+        ram[0xFF4D - 0xFF00] = 0xFF;
+        ram[0xFF4F - 0xFF00] = 0xFF;
+        ram[0xFF51 - 0xFF00] = 0xFF;
+        ram[0xFF52 - 0xFF00] = 0xFF;
+        ram[0xFF53 - 0xFF00] = 0xFF;
+        ram[0xFF54 - 0xFF00] = 0xFF;
+        ram[0xFF55 - 0xFF00] = 0xFF;
+        ram[0xFF56 - 0xFF00] = 0xFF;
+        ram[0xFF68 - 0xFF00] = 0xFF;
+        ram[0xFF69 - 0xFF00] = 0xFF;
+        ram[0xFF6A - 0xFF00] = 0xFF;
+        ram[0xFF6B - 0xFF00] = 0xFF;
+        ram[0xFF70 - 0xFF00] = 0xFF;
+        IORegisters { ram }
     }
 }
 
@@ -42,6 +73,7 @@ impl MemoryMappedDevice for IORegisters {
     }
 
     fn write(&mut self, addr: u16, val: u8) -> anyhow::Result<()> {
-        Ok(self.ram[usize::from(addr)] = val)
+        self.ram[usize::from(addr)] = val;
+        Ok(())
     }
 }

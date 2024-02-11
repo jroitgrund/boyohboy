@@ -1,5 +1,6 @@
 use crate::gb::bits::test_bit;
-use crate::gb::gpu::{get_lcdinfo, LCDInfo, OBJ_X_OFFSET, OBJ_Y_OFFSET};
+use crate::gb::gpu::{get_lcdinfo, LCDInfo, OBJ_ATTRIBUTES_SIZE, OBJ_X_OFFSET, OBJ_Y_OFFSET};
+use crate::gb::memory::map::OBJ_ATTRIBUTES_BASE;
 use crate::gb::memory::Memory;
 use itertools::Itertools;
 use std::cmp::Ordering;
@@ -20,11 +21,43 @@ impl ObjData {
     fn compare_tuple(&self) -> (i32, u8) {
         (self.x, self.index)
     }
+
+    pub fn from_memory(memory: &mut Memory, scanline: i32) -> anyhow::Result<Vec<ObjData>> {
+        let lcd_info = get_lcdinfo(memory)?;
+        Ok((0..40)
+            .map(|index: u8| {
+                let attributes_base = OBJ_ATTRIBUTES_BASE + u16::from(index) * OBJ_ATTRIBUTES_SIZE;
+                let y = i32::from(memory.read(attributes_base)?);
+                let x = i32::from(memory.read(attributes_base + 1)?);
+                let tile_index = memory.read(attributes_base + 2)?;
+                let flags = memory.read(attributes_base + 3)?;
+                let priority = test_bit(flags, 7);
+                let y_flip = test_bit(flags, 6);
+                let x_flip = test_bit(flags, 5);
+                let use_palette_1 = test_bit(flags, 4);
+                Ok(ObjData {
+                    index,
+                    y,
+                    x,
+                    tile_index,
+                    priority,
+                    y_flip,
+                    x_flip,
+                    use_palette_1,
+                })
+            })
+            .filter_ok(|obj| obj.covers_y(scanline, &lcd_info))
+            .take(10)
+            .collect::<anyhow::Result<Vec<ObjData>>>()?
+            .into_iter()
+            .sorted()
+            .collect())
+    }
 }
 
 impl PartialOrd<ObjData> for ObjData {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        self.compare_tuple().partial_cmp(&other.compare_tuple())
+        Some(self.cmp(other))
     }
 }
 
@@ -48,10 +81,10 @@ impl ObjData {
         }
     }
 
-    pub fn covers_y(&self, y: i32, lcdcontrol: &LCDInfo) -> bool {
+    pub fn covers_y(&self, y: i32, lcd_info: &LCDInfo) -> bool {
         self.y - OBJ_Y_OFFSET <= y
             && self.y
-                + (if lcdcontrol.should_use_16px_objects {
+                + (if lcd_info.should_use_16px_objects {
                     16
                 } else {
                     8
@@ -82,37 +115,4 @@ impl ObjData {
     pub fn is_2nd_16_px_tile(&self, y: i32) -> bool {
         y - (self.y - OBJ_Y_OFFSET) > 8
     }
-}
-
-pub fn get_objects(memory: &mut Memory, scanline: i32) -> anyhow::Result<Vec<ObjData>> {
-    let lcd_info = get_lcdinfo(memory)?;
-    Ok((0..40)
-        .map(|index: u8| {
-            let attributes_base = crate::gb::gpu::OBJ_ATTRIBUTES_BASE
-                + u16::from(index) * crate::gb::gpu::OBJ_ATTRIBUTES_SIZE;
-            let y = i32::from(memory.read(attributes_base)?);
-            let x = i32::from(memory.read(attributes_base + 1)?);
-            let tile_index = memory.read(attributes_base + 2)?;
-            let flags = memory.read(attributes_base + 3)?;
-            let priority = test_bit(flags, 7);
-            let y_flip = test_bit(flags, 6);
-            let x_flip = test_bit(flags, 5);
-            let use_palette_1 = test_bit(flags, 4);
-            Ok(ObjData {
-                index,
-                y,
-                x,
-                tile_index,
-                priority,
-                y_flip,
-                x_flip,
-                use_palette_1,
-            })
-        })
-        .filter_ok(|obj| obj.covers_y(scanline, &lcd_info))
-        .take(10)
-        .collect::<anyhow::Result<Vec<ObjData>>>()?
-        .into_iter()
-        .sorted()
-        .collect())
 }

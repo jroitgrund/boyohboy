@@ -20,11 +20,11 @@ fn main() -> Result<()> {
 
     let config = Config::builder()
         .appender(Appender::builder().build("stdout", Box::new(stdout)))
-        .build(Root::builder().appender("stdout").build(LevelFilter::Info))
+        .build(Root::builder().appender("stdout").build(LevelFilter::Warn))
         .unwrap();
     log4rs::init_config(config)?;
 
-    let mut gb = GameBoy::new(Path::new("tetris.gb"))?;
+    let mut gb = GameBoy::new(Path::new("dr-mario.gb"))?;
     let sdl_context = sdl2::init().map_err(anyhow::Error::msg)?;
     let video_subsystem = sdl_context.video().map_err(anyhow::Error::msg)?;
 

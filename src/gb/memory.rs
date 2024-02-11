@@ -1,9 +1,9 @@
-use crate::gb::gpu::OBJ_ATTRIBUTES_BASE;
 use crate::gb::memory::cartridge::Cartridge;
 use crate::gb::memory::external_ram::ExternalRam;
 use crate::gb::memory::high_ram::HighRam;
 use crate::gb::memory::interrupt_enable_register::InterruptEnableRegister;
 use crate::gb::memory::io_registers::IORegisters;
+use crate::gb::memory::map::{DMA, OBJ_ATTRIBUTES_BASE};
 use crate::gb::memory::not_usable::NotUsable;
 use crate::gb::memory::object_attribute_memory::ObjectAttributeMemory;
 use crate::gb::memory::ram::Ram;
@@ -15,12 +15,11 @@ mod external_ram;
 mod high_ram;
 mod interrupt_enable_register;
 mod io_registers;
+pub mod map;
 mod not_usable;
 mod object_attribute_memory;
 mod ram;
 mod video_ram;
-
-const DMA_REGISTER: u16 = 0xFF46;
 
 pub trait MemoryMappedDevice {
     fn read(&self, addr: u16) -> anyhow::Result<u8>;
@@ -34,7 +33,7 @@ pub struct Memory {
     ram: Ram,
     object_attribute_memory: ObjectAttributeMemory,
     not_usable: NotUsable,
-    pub io_registers: IORegisters,
+    io_registers: IORegisters,
     high_ram: HighRam,
     interrupt_enable_register: InterruptEnableRegister,
 }
@@ -53,13 +52,15 @@ impl Memory {
             interrupt_enable_register: InterruptEnableRegister::new(),
         })
     }
+
     pub fn read(&mut self, addr: u16) -> anyhow::Result<u8> {
         let (device, offset) = self.get_device_and_offset(addr)?;
         device.read(offset)
     }
+
     pub fn write(&mut self, addr: u16, val: u8) -> anyhow::Result<()> {
         match addr {
-            DMA_REGISTER => {
+            DMA => {
                 for offset in 0..0xFF {
                     let byte = self.read((u16::from(val) << 2) + offset)?;
                     self.write(OBJ_ATTRIBUTES_BASE + offset, byte)?;
@@ -71,6 +72,12 @@ impl Memory {
                 device.write(offset, val)
             }
         }
+    }
+
+    pub fn write_16(&mut self, addr: u16, val: u16) -> anyhow::Result<()> {
+        let bytes = val.to_le_bytes();
+        self.write(addr, bytes[0])?;
+        self.write(addr + 1, bytes[1])
     }
 
     fn get_device_and_offset(
