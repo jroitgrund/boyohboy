@@ -1,3 +1,4 @@
+pub const MBC_TYPE: u16 = 0x0147;
 pub const OBJ_TILES_BASE: u16 = 0x8000;
 pub const OBJ_ATTRIBUTES_BASE: u16 = 0xFE00;
 pub const SB: u16 = 0xFF01;

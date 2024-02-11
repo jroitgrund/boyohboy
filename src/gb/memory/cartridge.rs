@@ -1,3 +1,4 @@
+use crate::gb::memory::map::MBC_TYPE;
 use crate::gb::memory::MemoryMappedDevice;
 use anyhow::Result;
 use log::warn;
@@ -13,6 +14,8 @@ impl Cartridge {
     pub fn new(cartridge: &Path) -> Result<Cartridge> {
         let file = File::open(cartridge)?;
         let mmap = unsafe { MmapOptions::new().map(&file)? };
+        let mbc = mmap[usize::from(MBC_TYPE)];
+        warn!("MBC: {}", mbc);
         Ok(Cartridge { mmap })
     }
 }

@@ -14,6 +14,7 @@ use crate::gb::Color::{Black, DarkGray, LightGray, White};
 use crate::gb::{Color, Pixel};
 use anyhow::{anyhow, Result};
 use itertools::Itertools;
+use log::info;
 use std::mem;
 
 const OBJ_ATTRIBUTES_SIZE: u16 = 4;
@@ -203,7 +204,7 @@ impl GpuState {
     fn tick_mode3(
         &mut self,
         memory: &mut Memory,
-        lcd_info: &&LCDInfo,
+        lcd_info: &LCDInfo,
         dots: i32,
         scanline: i32,
         pixel: i32,
@@ -211,7 +212,7 @@ impl GpuState {
     ) -> Result<(GpuState, Option<Pixel>)> {
         let dots = dots + 1;
         if pixel < PIXELS_PER_LINE {
-            let color = self.get_pixel_color(memory, &lcd_info, scanline, pixel, &object_data)?;
+            let color = self.get_pixel_color(memory, lcd_info, scanline, pixel, &object_data)?;
 
             Ok((
                 (Mode3 {
@@ -309,7 +310,7 @@ impl GpuState {
     fn get_pixel_color(
         &mut self,
         memory: &mut Memory,
-        lcd_info: &&&LCDInfo,
+        lcd_info: &LCDInfo,
         scanline: i32,
         pixel: i32,
         object_data: &[ObjData],
@@ -324,6 +325,11 @@ impl GpuState {
                         .map(|color_id| (obj, color_id))
                 }),
         )?;
+
+        if lcd_info.are_objects_enabled && !object_data.is_empty() {
+            info!("{}", object_data.len());
+        }
+
         let mb_bg_color_id = match (&lcd_info, lcd_info.is_covered_by_window(pixel, scanline)) {
             (
                 LCDInfo {
