@@ -12,7 +12,7 @@ impl GameBoyImpl {
             Ok(None)
         }
     }
-    pub fn log(&mut self) -> anyhow::Result<()> {
+    pub fn _log(&mut self) -> anyhow::Result<()> {
         let pc = self.read_8(self.pc)?;
         let pc_1 = self.read_8(self.pc + 1)?;
         let pc_2 = self.read_8(self.pc + 2)?;

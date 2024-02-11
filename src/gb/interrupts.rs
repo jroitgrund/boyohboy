@@ -7,8 +7,8 @@ pub enum Interrupts {
     VBlank,
     LCD,
     Timer,
-    Serial,
-    Joypad,
+    _Serial,
+    _Joypad,
 }
 
 const IF_REGISTER: u16 = 0xFF0F;
@@ -58,8 +58,8 @@ impl GameBoyImpl {
             Interrupts::VBlank => 0,
             Interrupts::LCD => 1,
             Interrupts::Timer => 2,
-            Interrupts::Serial => 3,
-            Interrupts::Joypad => 4,
+            Interrupts::_Serial => 3,
+            Interrupts::_Joypad => 4,
         })
     }
 

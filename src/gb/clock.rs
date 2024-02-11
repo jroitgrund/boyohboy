@@ -1,5 +1,5 @@
 use crate::gb::bits::{get_bit, get_bits};
-use crate::gb::gpu::{Gpu, LY_REGISTER};
+use crate::gb::gpu::LY_REGISTER;
 use crate::gb::interrupts::Interrupts::{Timer, VBlank, LCD};
 use crate::gb::{GameBoyImpl, Pixel};
 use anyhow::{anyhow, Result};
@@ -26,19 +26,13 @@ struct LcdStatus {
 
 impl GameBoyImpl {
     pub fn tick(&mut self, cycles: usize) -> Result<Vec<Pixel>> {
-        let old_mode: u8 = match &self.gpu {
-            Gpu::Stopped => 2,
-            Gpu::Mode2 { .. } => 2,
-            Gpu::Mode3 { .. } => 3,
-            Gpu::Mode0 { .. } => 0,
-            Gpu::Mode1 { .. } => 1,
-        };
+        let old_mode: u8 = self.gpu.mode();
         let timer_info = self.get_timer_info()?;
 
         let mut pixels: Vec<Pixel> = Vec::with_capacity(4 * cycles);
 
         for _ in 0..cycles {
-            pixels.append(&mut self.tick_gpu()?);
+            pixels.append(&mut self.gpu.tick_gpu(&mut self.memory)?);
             self.cycles = self.cycles.wrapping_add(1);
 
             if self.cycles % usize::from(DIV_CYCLES) == 0 {
@@ -56,13 +50,7 @@ impl GameBoyImpl {
         let lcd_status = self.get_lcd_status()?;
 
         let lyc_compare = self.read_8(LY_REGISTER)? == self.read_8(LY_COMPARE)?;
-        let mode: u8 = match &self.gpu {
-            Gpu::Stopped => 2,
-            Gpu::Mode2 { .. } => 2,
-            Gpu::Mode3 { .. } => 3,
-            Gpu::Mode0 { .. } => 0,
-            Gpu::Mode1 { .. } => 1,
-        };
+        let mode: u8 = self.gpu.mode();
 
         self.write_8(
             LCD_STATUS,

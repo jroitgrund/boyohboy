@@ -1,44 +1,14 @@
+mod obj_data;
+
 use crate::gb::bits::{get_bit, get_bits, test_bit};
-use crate::gb::gpu::Gpu::{Mode0, Mode2, Stopped};
+use crate::gb::gpu::obj_data::ObjData;
+use crate::gb::gpu::GpuState::{Mode0, Mode1, Mode2, Mode3, Stopped};
+use crate::gb::memory::Memory;
 use crate::gb::Color::{Black, DarkGray, LightGray, White};
-use crate::gb::{Color, GameBoyImpl, Pixel};
+use crate::gb::{Color, Pixel};
 use anyhow::{anyhow, Result};
 use itertools::Itertools;
 use std::mem;
-use Gpu::{Mode1, Mode3};
-
-pub enum Gpu {
-    Stopped,
-    Mode2 {
-        scanline: i32,
-        dots_left: i32,
-    },
-    Mode3 {
-        scanline: i32,
-        object_data: Vec<ObjData>,
-        considered_tiles: Vec<u16>,
-        window_seen: bool,
-        pixel: i32,
-        penalty_dots: i32,
-        dots: i32,
-    },
-    Mode0 {
-        scanline: i32,
-        dots_left: i32,
-    },
-    Mode1 {
-        dots_left: i32,
-    },
-}
-
-impl Gpu {
-    pub fn new() -> Gpu {
-        Mode2 {
-            scanline: 0,
-            dots_left: MODE2_DOTS,
-        }
-    }
-}
 
 const OBJ_TILES_BASE: u16 = 0x8000;
 pub const OBJ_ATTRIBUTES_BASE: u16 = 0xFE00;
@@ -69,64 +39,55 @@ const MODE_1_DOTS: i32 = 4560;
 const PIXELS_PER_LINE: i32 = 160;
 const SCANLINES: i32 = 144;
 
-pub struct ObjData {
-    index: u8,
-    y: i32,
-    x: i32,
-    tile_index: u8,
-    priority: bool,
-    y_flip: bool,
-    x_flip: bool,
-    use_palette_1: bool,
+pub struct Gpu {
+    state: GpuState,
 }
 
-impl ObjData {
-    fn covers_x(&self, x: i32) -> bool {
-        self.x - OBJ_X_OFFSET <= x && self.x + 8 - OBJ_X_OFFSET > x
+impl Default for GpuState {
+    fn default() -> Self {
+        Stopped
     }
+}
 
-    fn get_tile_x(&self, x: i32) -> u8 {
-        let x = (x - (self.x - OBJ_X_OFFSET)) as u8;
-        if self.x_flip {
-            7 - x
-        } else {
-            x
+enum GpuState {
+    Stopped,
+    Mode2 {
+        scanline: i32,
+        dots_left: i32,
+    },
+    Mode3 {
+        scanline: i32,
+        object_data: Vec<ObjData>,
+        pixel: i32,
+        dots: i32,
+    },
+    Mode0 {
+        scanline: i32,
+        dots_left: i32,
+    },
+    Mode1 {
+        dots_left: i32,
+    },
+}
+
+impl Gpu {
+    pub fn new() -> Gpu {
+        Gpu {
+            state: Mode2 {
+                scanline: 0,
+                dots_left: MODE2_DOTS,
+            },
         }
     }
 
-    fn covers_y(&self, y: i32, lcdcontrol: &LCDInfo) -> bool {
-        self.y - OBJ_Y_OFFSET <= y
-            && self.y
-                + (if lcdcontrol.should_use_16px_objects {
-                    16
-                } else {
-                    8
-                })
-                - OBJ_Y_OFFSET
-                > y
-    }
-
-    fn get_tile_y(&self, y: i32, lcd_info: &LCDInfo) -> u8 {
-        let y = (y
-            - (self.y - OBJ_Y_OFFSET)
-            - if lcd_info.should_use_16px_objects {
-                8
-            } else {
-                0
-            }) as u8;
-        if self.y_flip {
-            (if lcd_info.should_use_16px_objects {
-                15
-            } else {
-                7
-            }) - y
-        } else {
-            y
+    pub fn mode(&self) -> u8 {
+        match &self.state {
+            Stopped => 2,
+            Mode2 { .. } => 2,
+            Mode3 { .. } => 3,
+            Mode0 { .. } => 0,
+            Mode1 { .. } => 1,
         }
-    }
-
-    fn is_2nd_16_px_tile(&self, y: i32) -> bool {
-        y - (self.y - OBJ_Y_OFFSET) > 8
     }
 }
 
@@ -156,115 +117,70 @@ impl LCDInfo {
     }
 }
 
-// const WINDOW_PENALTY: u8 = 6;
-
-const FIXED_PENALTY: i32 = 12;
-
-impl GameBoyImpl {
-    pub fn tick_gpu(&mut self) -> Result<Vec<Pixel>> {
-        let lcd_info = self.get_lcdinfo()?;
+impl Gpu {
+    pub fn tick_gpu(&mut self, memory: &mut Memory) -> Result<Vec<Pixel>> {
+        let lcd_info = get_lcdinfo(memory)?;
 
         if !lcd_info.is_ppu_enabled {
-            self.gpu = Stopped;
+            self.state = Stopped;
         }
 
         Ok((0..4)
-            .map(|_| self.tick_dot(&lcd_info))
+            .map(|_| self.state.tick_dot(memory, &lcd_info))
             .filter_map_ok(|f| f)
             .collect::<Result<Vec<Pixel>>>()?)
     }
+}
 
-    fn tick_dot(&mut self, lcd_info: &LCDInfo) -> Result<Option<Pixel>> {
-        let (new_gpu, pixels) = match &mut self.gpu {
+impl GpuState {
+    fn tick_dot(&mut self, memory: &mut Memory, lcd_info: &LCDInfo) -> Result<Option<Pixel>> {
+        let state: GpuState = mem::take(self);
+        let (new_state, pixels) = match state {
             Stopped => (self.tick_stopped(lcd_info), None),
             Mode2 {
                 scanline,
                 dots_left,
-            } => {
-                let dots_left = *dots_left;
-                let scanline = *scanline;
-                (self.tick_mode_2(dots_left, scanline)?, None)
-            }
+            } => (self.tick_mode_2(memory, dots_left, scanline)?, None),
             Mode3 {
                 scanline,
                 object_data,
-                considered_tiles,
-                window_seen,
                 pixel,
-                penalty_dots,
                 dots,
             } => {
-                let dots = *dots + 1;
-                let scanline = *scanline;
-                let pixel = *pixel;
-                let penalty_dots = *penalty_dots;
-                let window_seen = *window_seen;
-                let object_data = mem::take(object_data);
-                let considered_tiles = mem::take(considered_tiles);
+                let dots = dots + 1;
 
-                self.tick_mode3(
-                    &lcd_info,
-                    dots,
-                    scanline,
-                    pixel,
-                    penalty_dots,
-                    window_seen,
-                    object_data,
-                    considered_tiles,
-                )?
+                self.tick_mode3(memory, &lcd_info, dots, scanline, pixel, object_data)?
             }
             Mode0 {
                 scanline,
                 dots_left,
-            } => {
-                let scanline = *scanline;
-                let dots_left = *dots_left;
-                self.tick_mode0(scanline, dots_left)?
-            }
-            Mode1 { dots_left } => {
-                let dots_left = *dots_left;
-                self.tick_mode1(dots_left)?
-            }
+            } => self.tick_mode0(memory, scanline, dots_left)?,
+            Mode1 { dots_left } => self.tick_mode1(memory, dots_left)?,
         };
 
-        self.gpu = new_gpu;
+        *self = new_state;
+
         Ok(pixels)
     }
 
     fn tick_mode3(
         &mut self,
+        memory: &mut Memory,
         lcd_info: &&LCDInfo,
         dots: i32,
         scanline: i32,
         pixel: i32,
-        penalty_dots: i32,
-        window_seen: bool,
         object_data: Vec<ObjData>,
-        considered_tiles: Vec<u16>,
-    ) -> Result<(Gpu, Option<Pixel>)> {
+    ) -> Result<(GpuState, Option<Pixel>)> {
         let dots = dots + 1;
-        if penalty_dots > 0 {
-            Ok((
-                (Mode3 {
-                    scanline,
-                    object_data,
-                    considered_tiles,
-                    window_seen,
-                    pixel,
-                    penalty_dots: penalty_dots - 1,
-                    dots,
-                }),
-                None,
-            ))
-        } else if pixel < PIXELS_PER_LINE {
+        if pixel < PIXELS_PER_LINE {
             let mb_obj_and_color_id = invert(
                 object_data
                     .iter()
-                    .sorted_by_key(|obj_data| (obj_data.x, obj_data.index))
                     .find(|obj_data| obj_data.covers_x(pixel))
                     .filter(|_| lcd_info.are_objects_enabled)
                     .map(|obj| {
-                        self.get_object_color_id(obj, lcd_info, pixel, scanline)
+                        self.get_object_color_id(memory, obj, lcd_info, pixel, scanline)
                             .map(|color_id| (obj, color_id))
                     }),
             )?;
@@ -282,15 +198,15 @@ impl GameBoyImpl {
                         ..
                     },
                     true,
-                ) => Some(self.get_window_color_id(lcd_info, pixel, scanline)?),
-                _ => Some(self.get_bg_color_id(lcd_info, pixel, scanline)?),
+                ) => Some(self.get_window_color_id(memory, lcd_info, pixel, scanline)?),
+                _ => Some(self.get_bg_color_id(memory, lcd_info, pixel, scanline)?),
             };
 
             let color = match (mb_obj_and_color_id, mb_bg_color_id) {
                 (None, None) => White,
-                (None, Some(bg_color_id)) => self.get_bg_color(bg_color_id)?,
+                (None, Some(bg_color_id)) => self.get_bg_color(memory, bg_color_id)?,
                 (Some((_, COLOR_ID_TRANSPARENT)), Some(bg_color_id)) => {
-                    self.get_bg_color(bg_color_id)?
+                    self.get_bg_color(memory, bg_color_id)?
                 }
                 (
                     Some((
@@ -304,9 +220,9 @@ impl GameBoyImpl {
                     Some(bg_color_id),
                 ) => {
                     if bg_color_id != 0 {
-                        self.get_bg_color(bg_color_id)?
+                        self.get_bg_color(memory, bg_color_id)?
                     } else {
-                        self.get_obj_color(obj_color_id, *obp1_palette)?
+                        self.get_obj_color(memory, obj_color_id, *obp1_palette)?
                     }
                 }
                 (
@@ -318,17 +234,14 @@ impl GameBoyImpl {
                         obj_color_id,
                     )),
                     _,
-                ) => self.get_obj_color(obj_color_id, *obp1_palette)?,
+                ) => self.get_obj_color(memory, obj_color_id, *obp1_palette)?,
             };
 
             Ok((
                 (Mode3 {
                     scanline,
                     object_data,
-                    considered_tiles,
-                    window_seen,
                     pixel: pixel + 1,
-                    penalty_dots,
                     dots,
                 }),
                 Some(Pixel {
@@ -348,16 +261,18 @@ impl GameBoyImpl {
         }
     }
 
-    fn tick_mode_2(&mut self, dots_left: i32, scanline: i32) -> Result<Gpu> {
+    fn tick_mode_2(
+        &mut self,
+        memory: &mut Memory,
+        dots_left: i32,
+        scanline: i32,
+    ) -> Result<GpuState> {
         let dots_left = dots_left - 1;
         Ok(if dots_left == 0 {
             Mode3 {
                 scanline,
-                object_data: self.get_objects(scanline)?,
-                considered_tiles: Vec::new(),
-                window_seen: false,
+                object_data: obj_data::get_objects(memory, scanline)?,
                 pixel: 0,
-                penalty_dots: FIXED_PENALTY + self.get_bg_penalty()?,
                 dots: 0,
             }
         } else {
@@ -368,13 +283,18 @@ impl GameBoyImpl {
         })
     }
 
-    fn tick_mode0(&mut self, scanline: i32, dots_left: i32) -> Result<(Gpu, Option<Pixel>)> {
+    fn tick_mode0(
+        &mut self,
+        memory: &mut Memory,
+        scanline: i32,
+        dots_left: i32,
+    ) -> Result<(GpuState, Option<Pixel>)> {
         let dots_left = dots_left - 1;
 
         Ok((
             if dots_left == 0 {
                 let scanline = scanline + 1;
-                self.write_8(LY_REGISTER, scanline as u8)?;
+                memory.write(LY_REGISTER, scanline as u8)?;
                 if scanline == SCANLINES {
                     Mode1 {
                         dots_left: MODE_1_DOTS,
@@ -395,14 +315,18 @@ impl GameBoyImpl {
         ))
     }
 
-    fn tick_mode1(&mut self, dots_left: i32) -> Result<(Gpu, Option<Pixel>)> {
+    fn tick_mode1(
+        &mut self,
+        memory: &mut Memory,
+        dots_left: i32,
+    ) -> Result<(GpuState, Option<Pixel>)> {
         let dots_left = dots_left - 1;
         let scanline = (((4560 - dots_left) / 456) as u8) + 144;
-        self.write_8(LY_REGISTER, scanline)?;
+        memory.write(LY_REGISTER, scanline)?;
 
         Ok((
             if dots_left == 0 {
-                self.write_8(LY_REGISTER, 0)?;
+                memory.write(LY_REGISTER, 0)?;
                 Mode2 {
                     scanline: 0,
                     dots_left: MODE2_DOTS,
@@ -414,7 +338,7 @@ impl GameBoyImpl {
         ))
     }
 
-    fn tick_stopped(&mut self, lcd_info: &LCDInfo) -> Gpu {
+    fn tick_stopped(&mut self, lcd_info: &LCDInfo) -> GpuState {
         if lcd_info.is_ppu_enabled {
             Mode2 {
                 scanline: 0,
@@ -425,66 +349,9 @@ impl GameBoyImpl {
         }
     }
 
-    fn get_bg_penalty(&mut self) -> Result<i32> {
-        Ok((self.read_8(BG_SCX)? % 8) as i32)
-    }
-
-    fn get_objects(&mut self, scanline: i32) -> Result<Vec<ObjData>> {
-        let lcd_info = &self.get_lcdinfo()?;
-        (0..40)
-            .map(|index: u8| {
-                let attributes_base = OBJ_ATTRIBUTES_BASE + u16::from(index) * OBJ_ATTRIBUTES_SIZE;
-                let y = self.read_8(attributes_base)?;
-                let x = self.read_8(attributes_base + 1)?;
-                let tile_index = self.read_8(attributes_base + 2)?;
-                let flags = self.read_8(attributes_base + 3)?;
-                let priority = test_bit(flags, 7);
-                let y_flip = test_bit(flags, 6);
-                let x_flip = test_bit(flags, 5);
-                let obp1_palette = test_bit(flags, 4);
-                Ok(ObjData {
-                    index,
-                    y: i32::from(y),
-                    x: i32::from(x),
-                    tile_index,
-                    priority,
-                    y_flip,
-                    x_flip,
-                    use_palette_1: obp1_palette,
-                })
-            })
-            .filter_ok(|obj| obj.covers_y(scanline, lcd_info))
-            .take(10)
-            .collect()
-    }
-
-    fn get_lcdinfo(&mut self) -> Result<LCDInfo> {
-        Ok(LCDInfo {
-            is_ppu_enabled: test_bit(self.read_8(LCD_CONTROL)?, 7),
-            window_tile_map_base: if test_bit(self.read_8(LCD_CONTROL)?, 6) {
-                0x9C00
-            } else {
-                0x9800
-            },
-            is_window_enabled: test_bit(self.read_8(LCD_CONTROL)?, 5),
-            should_use_8000_addressing_mode: test_bit(self.read_8(LCD_CONTROL)?, 4),
-            bg_tile_map_base: if test_bit(self.read_8(LCD_CONTROL)?, 3) {
-                0x9C00
-            } else {
-                0x9800
-            },
-            should_use_16px_objects: test_bit(self.read_8(LCD_CONTROL)?, 2),
-            are_objects_enabled: test_bit(self.read_8(LCD_CONTROL)?, 1),
-            are_bg_and_window_enabled: test_bit(self.read_8(LCD_CONTROL)?, 0),
-            bg_x: i32::from(self.read_8(BG_SCX)?),
-            bg_y: i32::from(self.read_8(BG_SCY)?),
-            window_x: i32::from(self.read_8(WINDOW_SCX)?),
-            window_y: i32::from(self.read_8(WINDOW_SCY)?),
-        })
-    }
-
     fn get_object_color_id(
         &mut self,
+        memory: &mut Memory,
         obj: &ObjData,
         lcd_info: &LCDInfo,
         x: i32,
@@ -504,25 +371,49 @@ impl GameBoyImpl {
                 0
             };
 
-        self.get_color_id(tile_addr, obj.get_tile_x(x), obj.get_tile_y(y, lcd_info))
+        self.get_color_id(
+            memory,
+            tile_addr,
+            obj.get_tile_x(x),
+            obj.get_tile_y(y, lcd_info),
+        )
     }
 
-    fn get_bg_color_id(&mut self, lcd_info: &LCDInfo, x: i32, y: i32) -> Result<u8> {
+    fn get_bg_color_id(
+        &mut self,
+        memory: &mut Memory,
+        lcd_info: &LCDInfo,
+        x: i32,
+        y: i32,
+    ) -> Result<u8> {
         let bg_x = (x + lcd_info.bg_x) % WINDOW_AND_BG_SIZE;
         let bg_y = (y + lcd_info.bg_y) % WINDOW_AND_BG_SIZE;
 
-        self.get_bg_or_window_color_id(lcd_info, bg_x, bg_y, lcd_info.bg_tile_map_base)
+        self.get_bg_or_window_color_id(memory, lcd_info, bg_x, bg_y, lcd_info.bg_tile_map_base)
     }
 
-    fn get_window_color_id(&mut self, lcd_info: &LCDInfo, x: i32, y: i32) -> Result<u8> {
+    fn get_window_color_id(
+        &mut self,
+        memory: &mut Memory,
+        lcd_info: &LCDInfo,
+        x: i32,
+        y: i32,
+    ) -> Result<u8> {
         let window_x = x - lcd_info.window_x;
         let window_y = y - lcd_info.window_y;
 
-        self.get_bg_or_window_color_id(lcd_info, window_x, window_y, lcd_info.window_tile_map_base)
+        self.get_bg_or_window_color_id(
+            memory,
+            lcd_info,
+            window_x,
+            window_y,
+            lcd_info.window_tile_map_base,
+        )
     }
 
     fn get_bg_or_window_color_id(
         &mut self,
+        memory: &mut Memory,
         lcd_info: &LCDInfo,
         x: i32,
         y: i32,
@@ -533,12 +424,12 @@ impl GameBoyImpl {
 
         let tile_map_index = (tile_row * TILES_PER_LINE + tile_col) as u16;
 
-        let tile_index = self.read_8(tile_map_base + tile_map_index)?;
+        let tile_index = memory.read(tile_map_base + tile_map_index)?;
         let tile_addr = self.get_bg_or_window_tile_addr(tile_index, lcd_info)?;
         let tile_x = (x % TILE_SIZE_PX) as u8;
         let tile_y = (y % TILE_SIZE_PX) as u8;
 
-        self.get_color_id(tile_addr, tile_x, tile_y)
+        self.get_color_id(memory, tile_addr, tile_x, tile_y)
     }
 
     fn get_bg_or_window_tile_addr(&mut self, tile_index: u8, lcd_info: &LCDInfo) -> Result<u16> {
@@ -549,22 +440,33 @@ impl GameBoyImpl {
         }
     }
 
-    fn get_color_id(&mut self, tile_addr: u16, tile_x: u8, tile_y: u8) -> Result<u8> {
+    fn get_color_id(
+        &mut self,
+        memory: &mut Memory,
+        tile_addr: u16,
+        tile_x: u8,
+        tile_y: u8,
+    ) -> Result<u8> {
         let line_offset = u16::from(tile_y * LINE_BYTES);
 
-        let line_1 = self.read_8(tile_addr + line_offset)?;
-        let line_2 = self.read_8(tile_addr + line_offset + 1)?;
+        let line_1 = memory.read(tile_addr + line_offset)?;
+        let line_2 = memory.read(tile_addr + line_offset + 1)?;
 
         Ok(get_bit(line_1, 7 - tile_x) | (get_bit(line_2, 7 - tile_x) << 1))
     }
 
-    fn get_bg_color(&mut self, color_id: u8) -> Result<Color> {
-        let palette = self.read_8(BG_PALETTE)?;
+    fn get_bg_color(&mut self, memory: &mut Memory, color_id: u8) -> Result<Color> {
+        let palette = memory.read(BG_PALETTE)?;
         get_color(palette, color_id)
     }
 
-    fn get_obj_color(&mut self, color_id: u8, obp1_palette: bool) -> Result<Color> {
-        let palette = self.read_8(if obp1_palette {
+    fn get_obj_color(
+        &mut self,
+        memory: &mut Memory,
+        color_id: u8,
+        obp1_palette: bool,
+    ) -> Result<Color> {
+        let palette = memory.read(if obp1_palette {
             OBJ_PALETTE_1
         } else {
             OBJ_PALETTE_0
@@ -586,4 +488,29 @@ fn get_color(palette: u8, color_id: u8) -> Result<Color> {
 
 fn invert<T, E>(x: Option<Result<T, E>>) -> Result<Option<T>, E> {
     x.map_or(Ok(None), |v| v.map(Some))
+}
+
+fn get_lcdinfo(memory: &mut Memory) -> Result<LCDInfo> {
+    Ok(LCDInfo {
+        is_ppu_enabled: test_bit(memory.read(LCD_CONTROL)?, 7),
+        window_tile_map_base: if test_bit(memory.read(LCD_CONTROL)?, 6) {
+            0x9C00
+        } else {
+            0x9800
+        },
+        is_window_enabled: test_bit(memory.read(LCD_CONTROL)?, 5),
+        should_use_8000_addressing_mode: test_bit(memory.read(LCD_CONTROL)?, 4),
+        bg_tile_map_base: if test_bit(memory.read(LCD_CONTROL)?, 3) {
+            0x9C00
+        } else {
+            0x9800
+        },
+        should_use_16px_objects: test_bit(memory.read(LCD_CONTROL)?, 2),
+        are_objects_enabled: test_bit(memory.read(LCD_CONTROL)?, 1),
+        are_bg_and_window_enabled: test_bit(memory.read(LCD_CONTROL)?, 0),
+        bg_x: i32::from(memory.read(BG_SCX)?),
+        bg_y: i32::from(memory.read(BG_SCY)?),
+        window_x: i32::from(memory.read(WINDOW_SCX)?),
+        window_y: i32::from(memory.read(WINDOW_SCY)?),
+    })
 }

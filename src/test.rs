@@ -1,9 +1,6 @@
 #[cfg(test)]
 mod tests {
     use crate::gb::GameBoy;
-    use std::fs::File;
-    use std::io::BufWriter;
-    use std::io::Write;
     use std::path::Path;
 
     #[test]
@@ -76,15 +73,13 @@ mod tests {
         run_rom(Path::new("roms/mem_timing.gb"), "mem_timing")
     }
 
-    fn run_rom(path: &Path, id: &str) -> anyhow::Result<()> {
+    fn run_rom(path: &Path, _id: &str) -> anyhow::Result<()> {
         {
             let mut gb = GameBoy::new(path)?;
-            // let mut log = BufWriter::new(File::create(format!("logs/{:02?}.txt", num))?);
             let mut serial = String::new();
 
             while !serial.contains("Passed") {
                 let (maybe_serial_log, _) = gb.step()?;
-                // log.write_all(gb_log.as_bytes())?;
                 if let Some(serial_log) = maybe_serial_log {
                     print!("{}", serial_log);
                     serial.push_str(&serial_log);
