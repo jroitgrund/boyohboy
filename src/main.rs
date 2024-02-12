@@ -24,7 +24,7 @@ fn main() -> Result<()> {
         .unwrap();
     log4rs::init_config(config)?;
 
-    let mut gb = GameBoy::new(Path::new("tetris.gb"))?;
+    let mut gb = GameBoy::new(Path::new("/Users/jonathan/Downloads/dmg-acid2.gb"))?;
     let sdl_context = sdl2::init().map_err(anyhow::Error::msg)?;
     let video_subsystem = sdl_context.video().map_err(anyhow::Error::msg)?;
 

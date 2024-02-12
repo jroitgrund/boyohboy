@@ -1,5 +1,6 @@
 use crate::gb::memory::MemoryMappedDevice;
 use anyhow::anyhow;
+use log::warn;
 
 pub struct Ram {
     mirror_ram: MirrorRam,
@@ -39,7 +40,8 @@ impl MemoryMappedDevice for MirrorRam {
     }
 
     fn write(&mut self, addr: u16, _val: u8) -> anyhow::Result<()> {
-        Err(anyhow!("Prohibited write to mirror RAM: {}", addr))
+        warn!("Prohibited write to mirror RAM: {}", addr);
+        Ok(())
     }
 }
 

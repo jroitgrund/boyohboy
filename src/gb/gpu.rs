@@ -15,6 +15,7 @@ use crate::gb::{Color, Pixel};
 use anyhow::{anyhow, Result};
 use itertools::Itertools;
 use log::info;
+use std::collections::HashSet;
 use std::mem;
 
 const OBJ_ATTRIBUTES_SIZE: u16 = 4;
@@ -24,7 +25,7 @@ const TILE_BYTES: u16 = 16;
 
 const OBJ_X_OFFSET: i32 = 8;
 const OBJ_Y_OFFSET: i32 = 16;
-const WINDOW_X_OFFSET: i32 = 8;
+const WINDOW_X_OFFSET: i32 = 7;
 const WINDOW_AND_BG_SIZE: i32 = 256;
 const TILE_SIZE_PX: i32 = 8;
 const TILES_PER_LINE: i32 = 32;
@@ -46,15 +47,19 @@ enum GpuState {
     Mode2 {
         scanline: i32,
         dots_left: i32,
+        window_line: i32,
     },
     Mode3 {
         scanline: i32,
+        window_line: i32,
+        has_window: bool,
         object_data: Vec<ObjData>,
         pixel: i32,
         dots: i32,
     },
     Mode0 {
         scanline: i32,
+        window_line: i32,
         dots_left: i32,
     },
     Mode1 {
@@ -67,6 +72,7 @@ impl Gpu {
         Gpu {
             state: Mode2 {
                 scanline: 0,
+                window_line: 0,
                 dots_left: MODE2_DOTS,
             },
         }
@@ -133,10 +139,11 @@ impl Gpu {
             .collect::<Result<Vec<Pixel>>>()?;
 
         let maybe_mode = self.mode();
-        let scanline = self.scanline();
+        let maybe_scanline = self.scanline();
+        let current_lyc = (memory.read(STAT)? >> 2) & 1 == 1;
 
-        if scanline.is_some() {
-            memory.write(LY, scanline.unwrap() as u8)?;
+        if maybe_scanline.is_some() {
+            memory.write(LY, maybe_scanline.unwrap() as u8)?;
         }
 
         let stat = memory.read(STAT)?;
@@ -145,7 +152,7 @@ impl Gpu {
         memory.write(
             STAT,
             (stat & !7)
-                | (if scanline.is_some() && scanline.unwrap() as u8 == lyc {
+                | (if maybe_scanline.is_some() && maybe_scanline.unwrap() as u8 == lyc {
                     1
                 } else {
                     0
@@ -154,23 +161,26 @@ impl Gpu {
         )?;
 
         let lcd_status = LcdStatus::from_memory(memory)?;
-        let mut interrupts = Vec::with_capacity(2);
+        let mut interrupts = HashSet::with_capacity(2);
 
         if let Some(mode) = maybe_mode.filter(|m| *m != current_mode) {
             if mode == 0 && lcd_status.mode_0_interrupt
                 || mode == 1 && lcd_status.mode_1_interrupt
                 || mode == 2 && lcd_status.mode_2_interrupt
-                || scanline.is_some() && scanline.unwrap() as u8 == lyc && lcd_status.lyc_interrupt
             {
-                interrupts.push(Interrupts::Lcd);
+                interrupts.insert(Interrupts::Lcd);
             }
 
             if mode == 1 {
-                interrupts.push(Interrupts::VBlank);
+                interrupts.insert(Interrupts::VBlank);
             }
         }
 
-        Ok((pixels, interrupts))
+        if ((memory.read(STAT)? >> 2) & 1 == 1) && !current_lyc && lcd_status.lyc_interrupt {
+            interrupts.insert(Interrupts::Lcd);
+        }
+
+        Ok((pixels, interrupts.into_iter().collect()))
     }
 }
 
@@ -181,18 +191,34 @@ impl GpuState {
             Stopped => (self.tick_stopped(lcd_info), None),
             Mode2 {
                 scanline,
+                window_line,
                 dots_left,
-            } => (self.tick_mode_2(memory, dots_left, scanline)?, None),
+            } => (
+                self.tick_mode_2(memory, dots_left, scanline, window_line)?,
+                None,
+            ),
             Mode3 {
                 scanline,
+                window_line,
+                has_window,
                 object_data,
                 pixel,
                 dots,
-            } => self.tick_mode3(memory, &lcd_info, dots, scanline, pixel, object_data)?,
+            } => self.tick_mode3(
+                memory,
+                &lcd_info,
+                dots,
+                scanline,
+                window_line,
+                has_window,
+                pixel,
+                object_data,
+            )?,
             Mode0 {
                 scanline,
+                window_line,
                 dots_left,
-            } => (self.tick_mode0(scanline, dots_left)?, None),
+            } => (self.tick_mode0(scanline, window_line, dots_left)?, None),
             Mode1 { dots_left } => (self.tick_mode1(dots_left)?, None),
         };
 
@@ -207,16 +233,21 @@ impl GpuState {
         lcd_info: &LCDInfo,
         dots: i32,
         scanline: i32,
+        window_line: i32,
+        has_window: bool,
         pixel: i32,
         object_data: Vec<ObjData>,
     ) -> Result<(GpuState, Option<Pixel>)> {
         let dots = dots + 1;
         if pixel < PIXELS_PER_LINE {
-            let color = self.get_pixel_color(memory, lcd_info, scanline, pixel, &object_data)?;
+            let (color, is_window_pixel) =
+                self.get_pixel_color(memory, lcd_info, scanline, window_line, pixel, &object_data)?;
 
             Ok((
                 (Mode3 {
                     scanline,
+                    window_line,
+                    has_window: has_window || is_window_pixel,
                     object_data,
                     pixel: pixel + 1,
                     dots,
@@ -231,6 +262,11 @@ impl GpuState {
             Ok((
                 Mode0 {
                     scanline,
+                    window_line: if has_window {
+                        window_line + 1
+                    } else {
+                        window_line
+                    },
                     dots_left: 376 - dots - 1,
                 },
                 None,
@@ -243,11 +279,14 @@ impl GpuState {
         memory: &mut Memory,
         dots_left: i32,
         scanline: i32,
+        window_line: i32,
     ) -> Result<GpuState> {
         let dots_left = dots_left - 1;
         Ok(if dots_left == 0 {
             Mode3 {
                 scanline,
+                has_window: false,
+                window_line,
                 object_data: ObjData::from_memory(memory, scanline)?,
                 pixel: 0,
                 dots: 0,
@@ -255,12 +294,13 @@ impl GpuState {
         } else {
             Mode2 {
                 scanline,
+                window_line,
                 dots_left,
             }
         })
     }
 
-    fn tick_mode0(&mut self, scanline: i32, dots_left: i32) -> Result<GpuState> {
+    fn tick_mode0(&mut self, scanline: i32, window_line: i32, dots_left: i32) -> Result<GpuState> {
         let dots_left = dots_left - 1;
 
         Ok(if dots_left == 0 {
@@ -272,12 +312,14 @@ impl GpuState {
             } else {
                 Mode2 {
                     scanline,
+                    window_line,
                     dots_left: MODE2_DOTS,
                 }
             }
         } else {
             Mode0 {
                 scanline,
+                window_line,
                 dots_left,
             }
         })
@@ -289,6 +331,7 @@ impl GpuState {
         Ok(if dots_left == 0 {
             Mode2 {
                 scanline: 0,
+                window_line: 0,
                 dots_left: MODE2_DOTS,
             }
         } else {
@@ -300,6 +343,7 @@ impl GpuState {
         if lcd_info.is_ppu_enabled {
             Mode2 {
                 scanline: 0,
+                window_line: 0,
                 dots_left: MODE2_DOTS,
             }
         } else {
@@ -312,9 +356,10 @@ impl GpuState {
         memory: &mut Memory,
         lcd_info: &LCDInfo,
         scanline: i32,
+        window_line: i32,
         pixel: i32,
         object_data: &[ObjData],
-    ) -> Result<Color> {
+    ) -> Result<(Color, bool)> {
         let mb_obj_and_color_id = invert(
             object_data
                 .iter()
@@ -330,23 +375,30 @@ impl GpuState {
             info!("{}", object_data.len());
         }
 
-        let mb_bg_color_id = match (&lcd_info, lcd_info.is_covered_by_window(pixel, scanline)) {
-            (
-                LCDInfo {
-                    are_bg_and_window_enabled: false,
-                    ..
-                },
-                _,
-            ) => None,
-            (
-                LCDInfo {
-                    is_window_enabled: true,
-                    ..
-                },
-                true,
-            ) => Some(self.get_window_color_id(memory, lcd_info, pixel, scanline)?),
-            _ => Some(self.get_bg_color_id(memory, lcd_info, pixel, scanline)?),
-        };
+        let (mb_bg_color_id, is_window) =
+            match (&lcd_info, lcd_info.is_covered_by_window(pixel, scanline)) {
+                (
+                    LCDInfo {
+                        are_bg_and_window_enabled: false,
+                        ..
+                    },
+                    _,
+                ) => (None, false),
+                (
+                    LCDInfo {
+                        is_window_enabled: true,
+                        ..
+                    },
+                    true,
+                ) => (
+                    Some(self.get_window_color_id(memory, lcd_info, pixel, window_line)?),
+                    true,
+                ),
+                _ => (
+                    Some(self.get_bg_color_id(memory, lcd_info, pixel, scanline)?),
+                    false,
+                ),
+            };
 
         let color = match (mb_obj_and_color_id, mb_bg_color_id) {
             (None, None) => White,
@@ -375,7 +427,8 @@ impl GpuState {
                 self.get_obj_color(memory, obj_color_id, *use_palette_1)?
             }
         };
-        Ok(color)
+
+        Ok((color, is_window))
     }
 
     fn get_object_color_id(
@@ -386,19 +439,12 @@ impl GpuState {
         x: i32,
         y: i32,
     ) -> Result<u8> {
-        let tile_addr = OBJ_TILES_BASE
-            + u16::from(obj.tile_index & 0xFE)
-                * TILE_BYTES
-                * if lcd_info.should_use_16px_objects {
-                    2
-                } else {
-                    1
-                }
-            + if obj.is_2nd_16_px_tile(y) {
-                TILE_BYTES
-            } else {
-                0
-            };
+        let tile_index = if lcd_info.should_use_16px_objects {
+            (obj.tile_index & 0xFE) + if obj.is_2nd_16_px_tile(y) { 1 } else { 0 }
+        } else {
+            obj.tile_index
+        };
+        let tile_addr = OBJ_TILES_BASE + u16::from(tile_index) * TILE_BYTES;
 
         self.get_color_id(
             memory,
@@ -428,8 +474,8 @@ impl GpuState {
         x: i32,
         y: i32,
     ) -> Result<u8> {
-        let window_x = x - lcd_info.window_x;
-        let window_y = y - lcd_info.window_y;
+        let window_x = x - lcd_info.window_x + 7;
+        let window_y = y;
 
         self.get_bg_or_window_color_id(
             memory,
@@ -452,7 +498,6 @@ impl GpuState {
         let tile_col = x / TILE_SIZE_PX;
 
         let tile_map_index = (tile_row * TILES_PER_LINE + tile_col) as u16;
-
         let tile_index = memory.read(tile_map_base + tile_map_index)?;
         let tile_addr = self.get_bg_or_window_tile_addr(tile_index, lcd_info)?;
         let tile_x = (x % TILE_SIZE_PX) as u8;

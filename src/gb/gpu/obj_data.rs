@@ -94,13 +94,7 @@ impl ObjData {
     }
 
     pub fn get_tile_y(&self, y: i32, lcd_info: &LCDInfo) -> u8 {
-        let y = (y
-            - (self.y - OBJ_Y_OFFSET)
-            - if lcd_info.should_use_16px_objects {
-                8
-            } else {
-                0
-            }) as u8;
+        let y = (y - (self.y - OBJ_Y_OFFSET) - if self.is_2nd_16_px_tile(y) { 8 } else { 0 }) as u8;
         if self.y_flip {
             (if lcd_info.should_use_16px_objects {
                 15

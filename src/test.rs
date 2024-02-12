@@ -1,6 +1,10 @@
 #[cfg(test)]
 mod tests {
     use crate::gb::GameBoy;
+    use log::LevelFilter;
+    use log4rs::append::console::ConsoleAppender;
+    use log4rs::config::{Appender, Root};
+    use log4rs::Config;
     use std::path::Path;
 
     #[test]
@@ -75,6 +79,16 @@ mod tests {
 
     fn run_rom(path: &Path, _id: &str) -> anyhow::Result<()> {
         {
+            log4rs::init_config(
+                Config::builder()
+                    .appender(
+                        Appender::builder()
+                            .build("stdout", Box::new(ConsoleAppender::builder().build())),
+                    )
+                    .build(Root::builder().appender("stdout").build(LevelFilter::Warn))
+                    .unwrap(),
+            )?;
+
             let mut gb = GameBoy::new(path)?;
             let mut serial = String::new();
 

@@ -7,6 +7,7 @@ use anyhow::anyhow;
 use anyhow::Result;
 use log::info;
 
+#[derive(PartialEq, Hash, Eq)]
 pub enum Interrupts {
     VBlank,
     Lcd,
